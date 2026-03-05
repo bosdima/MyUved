@@ -1,0 +1,5 @@
+python-telegram-bot==20.7
+pybit==5.0.0
+python-dotenv==1.0.0
+sqlite3 (встроенная)
+datetime (встроенная)
