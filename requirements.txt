@@ -1,5 +1,12 @@
-python-telegram-bot==20.7
-pybit==5.0.0
-python-dotenv==1.0.0
-sqlite3 (встроенная)
-datetime (встроенная)
+# Основные зависимости
+python-telegram-bot[job-queue]>=20.0
+pybit>=5.0.0
+python-dotenv>=1.0.0
+
+# Базовые библиотеки (обычно входят в стандартную поставку Python)
+# sqlite3 — встроен в Python
+# json — встроен в Python
+# re — встроен в Python
+# datetime — встроен в Python
+# logging — встроен в Python
+# os — встроен в Python
