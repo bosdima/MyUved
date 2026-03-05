@@ -432,6 +432,9 @@ async def show_dca_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         start_date = min(datetime.strptime(p[1], "%Y-%m-%d %H:%M:%S") for p in purchases)
         
+        # Получаем настройку процента для уведомлений
+        target_percent = bot_settings.get('alert_percent', 10.0)
+        
         # Определяем эмодзи в зависимости от знака PnL
         pnl_emoji = "📈" if pnl >= 0 else "📉"
         pnl_sign = "+" if pnl >= 0 else ""
@@ -445,6 +448,11 @@ async def show_dca_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"💰 Текущая стоимость: {current_value:.2f} USDT\n"
         text += f"{pnl_emoji} Текущий PnL: {pnl:.2f} USDT ({pnl_sign}{pnl_percent:.2f}%)\n"
         text += f"📊 Всего сделок: {len(purchases)}\n"
+        
+        # Рассчитываем цену для достижения целевого процента
+        target_price = avg_price * (1 + target_percent / 100)
+        target_value = total_amount * target_price
+        target_pnl = target_value - total_cost
         
         # Рекомендации показываем всегда
         if pnl >= 0:
@@ -468,6 +476,19 @@ async def show_dca_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"\nТекущий убыток: {abs(pnl):.2f} USDT"
             text += f"\n\n📈 Необходим рост цены: +{price_needed_percent:.2f}%"
             text += f"\nЦелевая цена: {breakeven_price:.4f} USDT"
+        
+        # Дополнительная рекомендация для достижения целевого процента из настроек
+        text += f"\n\n🎯 ЦЕЛЕВАЯ ПРИБЫЛЬ {target_percent}%:"
+        text += f"\nЕсли вы хотите, чтобы ваша позиция вышла на {target_percent}% прибыли,"
+        text += f"\nвы должны продать {total_amount:.4f} TON"
+        text += f"\nпо цене: {target_price:.4f} USDT"
+        text += f"\nПолучите: {target_value:.2f} USDT"
+        text += f"\nПрибыль составит: {target_pnl:.2f} USDT"
+        
+        # Показываем сколько еще нужно роста до целевой цены
+        if current_price < target_price:
+            growth_needed = ((target_price - current_price) / current_price * 100) if current_price > 0 else 0
+            text += f"\n\n📊 До целевой цены осталось: +{growth_needed:.2f}%"
         
         await update.message.reply_text(text, reply_markup=get_main_keyboard())
     except Exception as e:
