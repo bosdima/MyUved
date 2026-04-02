@@ -6,10 +6,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -41,18 +41,18 @@ yandex_client = YandexClient(token=YANDEX_TOKEN)
 BACKUP_PATH = Path("backups")
 BACKUP_PATH.mkdir(exist_ok=True)
 
-# --- Хранилище напоминаний (в реальном проекте используйте БД) ---
+# --- Хранилище напоминаний ---
 REMINDERS_FILE = "reminders.json"
 
 def load_reminders():
     if os.path.exists(REMINDERS_FILE):
-        with open(REMINDERS_FILE, 'r') as f:
+        with open(REMINDERS_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     return {"last_id": 0, "reminders": []}
 
 def save_reminders(data):
-    with open(REMINDERS_FILE, 'w') as f:
-        json.dump(data, f, indent=4, default=str)
+    with open(REMINDERS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4, ensure_ascii=False, default=str)
 
 # --- Вспомогательные функции для Яндекс.Диска ---
 async def check_yandex_token() -> bool:
@@ -80,7 +80,6 @@ async def rotate_backups():
         async for item in yandex_client.listdir(BACKUP_FOLDER):
             if item.is_file() and item.name.endswith(".json"):
                 files.append((item.name, item.modified))
-        # Сортируем по дате изменения (новые в конце)
         files.sort(key=lambda x: x[1])
         to_delete = files[:-MAX_BACKUPS] if len(files) > MAX_BACKUPS else []
         for name, _ in to_delete:
@@ -92,9 +91,8 @@ async def rotate_backups():
 async def backup_reminders(force_notify=False):
     """Создает бэкап reminders.json, загружает на Диск и управляет ротацией"""
     file_path = BACKUP_PATH / REMINDERS_FILE
-    # Сначала копируем текущие данные в файл
-    with open(file_path, 'w') as f:
-        json.dump(load_reminders(), f, indent=4, default=str)
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(load_reminders(), f, indent=4, ensure_ascii=False, default=str)
 
     success = False
     attempt = 0
@@ -190,9 +188,12 @@ async def process_duration(callback: CallbackQuery, state: FSMContext):
     elif duration_type == "d":
         remind_time += timedelta(days=int(duration_value))
     elif duration_type == "m":
-        remind_time += timedelta(days=30)  # Аппроксимация месяца
+        remind_time += timedelta(days=30)
     elif duration_type == "custom":
-        await callback.message.edit_text("📅 Введите дату и время в формате: *ГГГГ-ММ-ДД ЧЧ:ММ*\\, например *2025-12-31 23:59*", parse_mode="MarkdownV2")
+        await callback.message.edit_text(
+            "📅 Введите дату и время в формате: *ГГГГ-ММ-ДД ЧЧ:ММ*\\, например *2025-12-31 23:59*",
+            parse_mode="MarkdownV2"
+        )
         await state.set_state(ReminderForm.waiting_for_custom_date)
         await callback.answer()
         return
@@ -215,10 +216,11 @@ async def save_reminder(callback: CallbackQuery, state: FSMContext, remind_time:
         "last_notified": None
     })
     save_reminders(reminders_data)
-    await callback.message.edit_text(f"✅ Напоминание создано!\n\nТекст: {text}\nНапомню: {remind_time.strftime('%Y-%m-%d %H:%M')}")
+    await callback.message.edit_text(
+        f"✅ Напоминание создано!\n\nТекст: {text}\nНапомню: {remind_time.strftime('%Y-%m-%d %H:%M')}"
+    )
     await state.clear()
     await callback.answer()
-    # Делаем бэкап после изменения
     asyncio.create_task(backup_reminders(force_notify=True))
 
 @dp.message(ReminderForm.waiting_for_custom_date)
@@ -242,11 +244,16 @@ async def process_custom_date(message: Message, state: FSMContext):
             "last_notified": None
         })
         save_reminders(reminders_data)
-        await message.answer(f"✅ Напоминание создано!\n\nТекст: {user_data['text']}\nНапомню: {remind_time.strftime('%Y-%m-%d %H:%M')}")
+        await message.answer(
+            f"✅ Напоминание создано!\n\nТекст: {user_data['text']}\nНапомню: {remind_time.strftime('%Y-%m-%d %H:%M')}"
+        )
         await state.clear()
         asyncio.create_task(backup_reminders(force_notify=True))
     except ValueError:
-        await message.answer("❌ Неверный формат. Введите дату в формате: *ГГГГ-ММ-ДД ЧЧ:ММ*", parse_mode="MarkdownV2")
+        await message.answer(
+            "❌ Неверный формат. Введите дату в формате: *ГГГГ-ММ-ДД ЧЧ:ММ*",
+            parse_mode="MarkdownV2"
+        )
 
 @dp.callback_query(F.data == "list_reminders")
 async def list_reminders(callback: CallbackQuery):
@@ -285,11 +292,9 @@ async def settings_menu(callback: CallbackQuery):
 @dp.callback_query(F.data == "export_data")
 async def export_data(callback: CallbackQuery):
     file_path = BACKUP_PATH / REMINDERS_FILE
-    with open(file_path, 'w') as f:
-        json.dump(load_reminders(), f, indent=4, default=str)
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(load_reminders(), f, indent=4, ensure_ascii=False, default=str)
     
-    # Отправляем файл пользователю
-    from aiogram.types import FSInputFile
     document = FSInputFile(file_path)
     await callback.message.answer_document(document, caption="📁 Ваши данные (напоминания)")
     await callback.answer()
@@ -307,7 +312,7 @@ async def handle_import_file(message: Message):
         await bot.download_file(file.file_path, destination=file_path)
         
         try:
-            with open(file_path, 'r') as f:
+            with open(file_path, 'r', encoding='utf-8') as f:
                 imported_data = json.load(f)
             save_reminders(imported_data)
             await message.answer("✅ Данные успешно импортированы!")
@@ -331,7 +336,7 @@ async def complete_reminder(callback: CallbackQuery):
             break
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("snooze_") and ~F.data.startswith("snooze_1h_") and ~F.data.startswith("snooze_3h_") and ~F.data.startswith("snooze_1d_") and ~F.data.startswith("snooze_3d_"))
+@dp.callback_query(F.data.startswith("snooze_") & ~F.data.startswith("snooze_1h_") & ~F.data.startswith("snooze_3h_") & ~F.data.startswith("snooze_1d_") & ~F.data.startswith("snooze_3d_"))
 async def snooze_menu(callback: CallbackQuery):
     parts = callback.data.split("_")
     reminder_id = int(parts[1])
@@ -341,7 +346,7 @@ async def snooze_menu(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("snooze_1h_") | F.data.startswith("snooze_3h_") | F.data.startswith("snooze_1d_") | F.data.startswith("snooze_3d_"))
 async def apply_snooze(callback: CallbackQuery):
     parts = callback.data.split("_")
-    duration = parts[1]  # 1h, 3h, 1d, 3d
+    duration = parts[1]
     reminder_id = int(parts[2])
     reminders_data = load_reminders()
     for r in reminders_data["reminders"]:
@@ -392,7 +397,6 @@ async def check_reminders():
         if r["is_active"] and not r.get("confirmed", False):
             remind_time = datetime.fromisoformat(r["remind_at"])
             if remind_time <= now:
-                # Отправляем уведомление
                 keyboard = get_reminder_actions(r["id"])
                 try:
                     await bot.send_message(
@@ -402,14 +406,12 @@ async def check_reminders():
                         parse_mode="MarkdownV2"
                     )
                     r["last_notified"] = now.isoformat()
-                    # Если не подтверждено, переносим на час (задано в настройках)
                     r["remind_at"] = (now + timedelta(hours=NOTIFICATION_INTERVAL)).isoformat()
                     updated = True
                 except Exception as e:
                     logging.error(f"Не удалось отправить уведомление пользователю {r['user_id']}: {e}")
     if updated:
         save_reminders(reminders_data)
-        # Бэкапим только если были изменения
         asyncio.create_task(backup_reminders(force_notify=False))
 
 async def daily_yandex_check():
@@ -423,12 +425,10 @@ async def daily_yandex_check():
 
 # --- Запуск планировщика ---
 async def on_startup():
-    # Проверяем токен Яндекс.Диска при старте
     if await check_yandex_token():
         await bot.send_message(ADMIN_ID, "✅ Бот запущен и подключен к Яндекс.Диску.")
     else:
         await bot.send_message(ADMIN_ID, "⚠️ ВНИМАНИЕ! Бот запущен, но НЕТ ДОСТУПА к Яндекс.Диску. Проверьте токен.")
-    # Запускаем планировщик
     scheduler.add_job(daily_yandex_check, CronTrigger(hour=6, minute=0))
     scheduler.add_job(check_reminders, IntervalTrigger(seconds=30))
     scheduler.start()
@@ -438,4 +438,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())  # ИСПРАВЛЕНО: добавлена закрывающая скобка
+    asyncio.run(main())
