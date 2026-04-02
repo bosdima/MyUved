@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -263,6 +263,60 @@ async def list_reminders(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="MarkdownV2")
     await callback.answer()
 
+@dp.callback_query(F.data == "settings")
+async def settings_menu(callback: CallbackQuery):
+    settings_text = (
+        "⚙️ *Настройки*\n\n"
+        f"📁 Папка бэкапов: `{BACKUP_FOLDER}`\n"
+        f"💾 Максимум бэкапов: `{MAX_BACKUPS}`\n"
+        f"🔄 Интервал повтора: `{RETRY_INTERVAL}` мин\n"
+        f"⏰ Интервал уведомлений: `{NOTIFICATION_INTERVAL}` час\n\n"
+        "📤 *Экспорт настроек:* Отправить файл с данными\n"
+        "📥 *Импорт настроек:* Загрузить файл .json"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Экспорт данных", callback_data="export_data")],
+        [InlineKeyboardButton(text="📥 Импорт данных", callback_data="import_data")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
+    ])
+    await callback.message.edit_text(settings_text, reply_markup=keyboard, parse_mode="MarkdownV2")
+    await callback.answer()
+
+@dp.callback_query(F.data == "export_data")
+async def export_data(callback: CallbackQuery):
+    file_path = BACKUP_PATH / REMINDERS_FILE
+    with open(file_path, 'w') as f:
+        json.dump(load_reminders(), f, indent=4, default=str)
+    
+    # Отправляем файл пользователю
+    from aiogram.types import FSInputFile
+    document = FSInputFile(file_path)
+    await callback.message.answer_document(document, caption="📁 Ваши данные (напоминания)")
+    await callback.answer()
+
+@dp.callback_query(F.data == "import_data")
+async def import_data(callback: CallbackQuery):
+    await callback.message.answer("📥 Отправьте JSON-файл с данными для импорта.")
+    await callback.answer()
+
+@dp.message(F.document)
+async def handle_import_file(message: Message):
+    if message.document.file_name.endswith('.json'):
+        file = await bot.get_file(message.document.file_id)
+        file_path = BACKUP_PATH / "imported_reminders.json"
+        await bot.download_file(file.file_path, destination=file_path)
+        
+        try:
+            with open(file_path, 'r') as f:
+                imported_data = json.load(f)
+            save_reminders(imported_data)
+            await message.answer("✅ Данные успешно импортированы!")
+            asyncio.create_task(backup_reminders(force_notify=True))
+        except Exception as e:
+            await message.answer(f"❌ Ошибка импорта: {e}")
+    else:
+        await message.answer("❌ Пожалуйста, отправьте JSON файл.")
+
 @dp.callback_query(F.data.startswith("complete_"))
 async def complete_reminder(callback: CallbackQuery):
     reminder_id = int(callback.data.split("_")[1])
@@ -277,14 +331,14 @@ async def complete_reminder(callback: CallbackQuery):
             break
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("snooze_"))
+@dp.callback_query(F.data.startswith("snooze_") and ~F.data.startswith("snooze_1h_") and ~F.data.startswith("snooze_3h_") and ~F.data.startswith("snooze_1d_") and ~F.data.startswith("snooze_3d_"))
 async def snooze_menu(callback: CallbackQuery):
     parts = callback.data.split("_")
     reminder_id = int(parts[1])
     await callback.message.edit_text("⏰ На сколько отсрочить напоминание?", reply_markup=get_snooze_keyboard(reminder_id))
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("snooze_1h_") or F.data.startswith("snooze_3h_") or F.data.startswith("snooze_1d_") or F.data.startswith("snooze_3d_"))
+@dp.callback_query(F.data.startswith("snooze_1h_") | F.data.startswith("snooze_3h_") | F.data.startswith("snooze_1d_") | F.data.startswith("snooze_3d_"))
 async def apply_snooze(callback: CallbackQuery):
     parts = callback.data.split("_")
     duration = parts[1]  # 1h, 3h, 1d, 3d
@@ -312,6 +366,20 @@ async def delete_reminder(callback: CallbackQuery):
     save_reminders(reminders_data)
     await callback.message.edit_text("🗑 Напоминание удалено.")
     asyncio.create_task(backup_reminders(force_notify=True))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("back_to_"))
+async def back_to_reminder(callback: CallbackQuery):
+    reminder_id = int(callback.data.split("_")[2])
+    reminders_data = load_reminders()
+    for r in reminders_data["reminders"]:
+        if r["id"] == reminder_id:
+            await callback.message.edit_text(
+                f"🔔 *Напоминание*\n\n{r['text']}",
+                reply_markup=get_reminder_actions(reminder_id),
+                parse_mode="MarkdownV2"
+            )
+            break
     await callback.answer()
 
 # --- Фоновые задачи ---
@@ -370,4 +438,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main()
+    asyncio.run(main())  # ИСПРАВЛЕНО: добавлена закрывающая скобка
