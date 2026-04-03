@@ -15,10 +15,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from dotenv import load_dotenv
-from yadisk import AsyncClient as YandexClient
 
 # Версия бота
-BOT_VERSION = "2.0.0"
+BOT_VERSION = "2.0.1"
 BOT_DATE = "2026-04-03"
 
 # Загружаем переменные окружения
@@ -26,7 +25,7 @@ load_dotenv()
 
 # Настройки
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+ADMIN_ID = int(os.getenv("ADMIN_ID")) if os.getenv("ADMIN_ID") else None
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 BACKUP_FOLDER = os.getenv("BACKUP_FOLDER", "TelegramBackups/")
 MAX_BACKUPS = int(os.getenv("MAX_BACKUPS", 5))
@@ -40,8 +39,6 @@ if not BOT_TOKEN:
 if not ADMIN_ID:
     logging.error("ADMIN_ID не найден в .env файле!")
     sys.exit(1)
-if not YANDEX_TOKEN:
-    logging.warning("YANDEX_TOKEN не найден. Бэкапы на Яндекс.Диск не будут работать!")
 
 # Настройка логов
 logging.basicConfig(
@@ -53,10 +50,20 @@ logger = logging.getLogger(__name__)
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-scheduler = AsyncIOScheduler(timezone="Europe/Moscow")  # Указываем часовой пояс
+scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 
-# --- Инициализация Яндекс.Диска ---
-yandex_client = YandexClient(token=YANDEX_TOKEN) if YANDEX_TOKEN else None
+# --- Инициализация Яндекс.Диска (опционально) ---
+yandex_client = None
+if YANDEX_TOKEN:
+    try:
+        from yadisk import AsyncClient as YandexClient
+        yandex_client = YandexClient(token=YANDEX_TOKEN)
+        logger.info("Яндекс.Диск инициализирован")
+    except ImportError:
+        logger.warning("Библиотека yadisk не установлена. Бэкапы на Яндекс.Диск не будут работать")
+    except Exception as e:
+        logger.error(f"Ошибка инициализации Яндекс.Диска: {e}")
+
 BACKUP_PATH = Path("backups")
 BACKUP_PATH.mkdir(exist_ok=True)
 
@@ -99,11 +106,9 @@ async def ensure_backup_folder():
     if not yandex_client:
         return False
     try:
-        # Проверяем существование папки
         try:
             await yandex_client.get_meta(BACKUP_FOLDER.rstrip('/'))
         except:
-            # Папка не существует, создаем
             await yandex_client.mkdir(BACKUP_FOLDER.rstrip('/'))
             logger.info(f"Создана папка {BACKUP_FOLDER} на Яндекс.Диске")
         return True
@@ -149,12 +154,12 @@ async def backup_reminders(force_notify=False):
         json.dump(load_reminders(), f, indent=4, ensure_ascii=False, default=str)
 
     if not yandex_client:
-        logger.warning("Яндекс.Диск не настроен. Бэкап сохранен локально.")
+        logger.info("Яндекс.Диск не настроен. Бэкап сохранен локально.")
         return
 
     success = False
     attempt = 0
-    while not success:
+    while not success and attempt < 5:  # Ограничиваем количество попыток
         success = await upload_backup_to_yandex(file_path)
         if not success:
             attempt += 1
@@ -177,14 +182,14 @@ def get_main_keyboard():
 
 def get_duration_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Через 1 час", callback_data="duration_1_h"),
-         InlineKeyboardButton(text="Через 3 часа", callback_data="duration_3_h")],
-        [InlineKeyboardButton(text="Через 6 часов", callback_data="duration_6_h"),
-         InlineKeyboardButton(text="Через 12 часов", callback_data="duration_12_h")],
-        [InlineKeyboardButton(text="Через 1 день", callback_data="duration_1_d"),
-         InlineKeyboardButton(text="Через 3 дня", callback_data="duration_3_d")],
-        [InlineKeyboardButton(text="Через 1 неделю", callback_data="duration_1_w"),
-         InlineKeyboardButton(text="Через 1 месяц", callback_data="duration_1_m")],
+        [InlineKeyboardButton(text="1 час", callback_data="duration_1_h"),
+         InlineKeyboardButton(text="3 часа", callback_data="duration_3_h")],
+        [InlineKeyboardButton(text="6 часов", callback_data="duration_6_h"),
+         InlineKeyboardButton(text="12 часов", callback_data="duration_12_h")],
+        [InlineKeyboardButton(text="1 день", callback_data="duration_1_d"),
+         InlineKeyboardButton(text="3 дня", callback_data="duration_3_d")],
+        [InlineKeyboardButton(text="1 неделя", callback_data="duration_1_w"),
+         InlineKeyboardButton(text="1 месяц", callback_data="duration_1_m")],
         [InlineKeyboardButton(text="📅 Выбрать дату", callback_data="duration_custom")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
     ])
@@ -225,7 +230,6 @@ async def cmd_start(message: Message):
     logger.info(f"Пользователь {message.from_user.id} запустил бота")
 
 @dp.message(Command("version"))
-@dp.message(Command("ver"))
 async def cmd_version(message: Message):
     await message.answer(
         f"🤖 *Информация о боте*\n\n"
@@ -451,7 +455,6 @@ async def handle_import_file(message: Message):
             with open(file_path, 'r', encoding='utf-8') as f:
                 imported_data = json.load(f)
             
-            # Проверяем структуру данных
             if "reminders" in imported_data and "last_id" in imported_data:
                 save_reminders(imported_data)
                 await message.answer(f"✅ Данные успешно импортированы!\n\n📊 Загружено напоминаний: {len(imported_data['reminders'])}")
@@ -521,7 +524,6 @@ async def delete_reminder(callback: CallbackQuery):
     reminder_id = int(callback.data.split("_")[1])
     reminders_data = load_reminders()
     
-    deleted_text = None
     reminders_data["reminders"] = [r for r in reminders_data["reminders"] if not (r["id"] == reminder_id and r["user_id"] == callback.from_user.id)]
     
     if save_reminders(reminders_data):
@@ -592,7 +594,6 @@ async def on_startup():
     """Действия при запуске бота"""
     logger.info(f"Запуск бота версии {BOT_VERSION} от {BOT_DATE}")
     
-    # Проверяем токен Яндекс.Диска при старте
     yandex_status = await check_yandex_token()
     if yandex_status:
         await bot.send_message(ADMIN_ID, f"✅ Бот v{BOT_VERSION} запущен и подключен к Яндекс.Диску.")
@@ -601,7 +602,6 @@ async def on_startup():
         await bot.send_message(ADMIN_ID, f"⚠️ Бот v{BOT_VERSION} запущен, но НЕТ ДОСТУПА к Яндекс.Диску. Проверьте токен.")
         logger.warning("Нет доступа к Яндекс.Диску")
     
-    # Запускаем планировщик
     scheduler.add_job(daily_yandex_check, CronTrigger(hour=6, minute=0))
     scheduler.add_job(check_reminders, IntervalTrigger(seconds=30))
     scheduler.start()
