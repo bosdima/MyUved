@@ -17,7 +17,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from dotenv import load_dotenv
 
 # Версия бота
-BOT_VERSION = "2.0.1"
+BOT_VERSION = "2.0.2"
 BOT_DATE = "2026-04-03"
 
 # Загружаем переменные окружения
@@ -59,8 +59,8 @@ if YANDEX_TOKEN:
         from yadisk import AsyncClient as YandexClient
         yandex_client = YandexClient(token=YANDEX_TOKEN)
         logger.info("Яндекс.Диск инициализирован")
-    except ImportError:
-        logger.warning("Библиотека yadisk не установлена. Бэкапы на Яндекс.Диск не будут работать")
+    except ImportError as e:
+        logger.warning(f"Библиотека yadisk не установлена: {e}")
     except Exception as e:
         logger.error(f"Ошибка инициализации Яндекс.Диска: {e}")
 
@@ -159,7 +159,7 @@ async def backup_reminders(force_notify=False):
 
     success = False
     attempt = 0
-    while not success and attempt < 5:  # Ограничиваем количество попыток
+    while not success and attempt < 5:
         success = await upload_backup_to_yandex(file_path)
         if not success:
             attempt += 1
