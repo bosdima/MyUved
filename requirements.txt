@@ -1,6 +1,4 @@
-aiogram==3.10.0
-yadisk[async-defaults]==2.1.0
-APScheduler==3.10.4
-aiofiles==23.2.1
+aiogram==2.25.1
 python-dotenv==1.0.0
-pytz==2024.1
+yadisk==1.2.6
+aiohttp==3.9.1
