@@ -5,12 +5,10 @@ import shutil
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, StateFilter
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.contrib.middlewares.logging import LoggingMiddleware
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 import yadisk
 
@@ -23,9 +21,9 @@ YANDEX_TOKEN = os.getenv('YANDEX_TOKEN')
 BACKUP_FOLDER = os.getenv('BACKUP_FOLDER')
 
 # Инициализация бота
-storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=storage)
+dp = Dispatcher(bot)
+dp.middleware.setup(LoggingMiddleware())
 
 # Инициализация Яндекс.Диска
 yandex_client = yadisk.YaDisk(token=YANDEX_TOKEN)
@@ -106,7 +104,12 @@ async def create_backup(reason: str = "") -> bool:
         
         shutil.make_archive(os.path.join(TEMP_BACKUP_FOLDER, f'backup_{timestamp}'), 'zip', TEMP_BACKUP_FOLDER)
         
-        backup_path_on_disk = os.path.join(settings['backup_path'], f'backup_{timestamp}.zip')
+        # Создаем путь на Яндекс.Диске
+        backup_path_on_disk = settings['backup_path'].replace('\\', '/')
+        if not backup_path_on_disk.endswith('/'):
+            backup_path_on_disk += '/'
+        backup_path_on_disk += f'backup_{timestamp}.zip'
+        
         yandex_client.upload(os.path.join(TEMP_BACKUP_FOLDER, f'backup_{timestamp}.zip'), backup_path_on_disk)
         
         await cleanup_old_backups()
@@ -120,14 +123,15 @@ async def create_backup(reason: str = "") -> bool:
 async def cleanup_old_backups():
     """Очистка старых бэкапов"""
     try:
-        files = yandex_client.listdir(settings['backup_path'])
+        path = settings['backup_path'].replace('\\', '/')
+        files = list(yandex_client.listdir(path))
         backup_files = [f for f in files if f.name.startswith('backup_') and f.name.endswith('.zip')]
         backup_files.sort(key=lambda x: x.name, reverse=True)
         
         for old_file in backup_files[5:]:
-            yandex_client.remove(os.path.join(settings['backup_path'], old_file.name))
-    except:
-        pass
+            yandex_client.remove(os.path.join(path, old_file.name))
+    except Exception as e:
+        print(f"Ошибка очистки бэкапов: {e}")
 
 async def show_backup_message(message: types.Message, success: bool):
     """Показать сообщение о результате бэкапа"""
@@ -142,7 +146,39 @@ async def show_backup_message(message: types.Message, success: bool):
     except:
         pass
 
-@dp.message(Command("start"))
+async def daily_check():
+    """Ежедневная проверка в 6:00"""
+    while True:
+        now = datetime.now()
+        target_time = datetime.now().replace(hour=6, minute=0, second=0, microsecond=0)
+        
+        if now >= target_time:
+            target_time += timedelta(days=1)
+        
+        wait_seconds = (target_time - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
+        
+        access = await check_yandex_access()
+        
+        if access:
+            await bot.send_message(ADMIN_ID, "✅ Доступ к Яндекс.Диску есть!")
+        else:
+            instruction = """
+❌ НЕТ ДОСТУПА К ЯНДЕКС ДИСКУ!
+
+📝 Инструкция по получению YANDEX_TOKEN:
+
+1. Перейдите на https://yandex.ru/dev/disk/rest/
+2. Нажмите "Получить токен"
+3. Авторизуйтесь под своей учетной записью
+4. Нажмите "Разрешить" для доступа к Яндекс.Диску
+5. Скопируйте полученный токен
+6. Добавьте токен в файл .env: YANDEX_TOKEN=ваш_токен
+7. Перезапустите бота
+"""
+            await bot.send_message(ADMIN_ID, instruction)
+
+@dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("❌ У вас нет доступа к этому боту!")
@@ -176,44 +212,44 @@ async def cmd_start(message: types.Message):
     
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📝 Список уведомлений")],
-            [KeyboardButton(text="➕ Добавить уведомление")],
-            [KeyboardButton(text="⚙️ Настройки")]
+            [KeyboardButton("📝 Список уведомлений")],
+            [KeyboardButton("➕ Добавить уведомление")],
+            [KeyboardButton("⚙️ Настройки")]
         ],
         resize_keyboard=True
     )
     
     await message.answer("👋 Добро пожаловать!\nВыберите действие:", reply_markup=keyboard)
 
-@dp.message(lambda message: message.text == "➕ Добавить уведомление")
-async def add_notification_start(message: types.Message, state: FSMContext):
+@dp.message_handler(lambda message: message.text == "➕ Добавить уведомление")
+async def add_notification_start(message: types.Message):
     await message.answer("📝 Введите текст уведомления:")
-    await state.set_state(NotificationStates.waiting_for_text)
+    await NotificationStates.waiting_for_text.set()
 
-@dp.message(NotificationStates.waiting_for_text)
+@dp.message_handler(state=NotificationStates.waiting_for_text)
 async def process_notification_text(message: types.Message, state: FSMContext):
     await state.update_data(text=message.text)
     
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="⏰ В часах")],
-            [KeyboardButton(text="📅 В днях")],
-            [KeyboardButton(text="📆 В месяцах")],
-            [KeyboardButton(text="🎯 Конкретная дата")],
-            [KeyboardButton(text="❌ Отмена")]
+            [KeyboardButton("⏰ В часах")],
+            [KeyboardButton("📅 В днях")],
+            [KeyboardButton("📆 В месяцах")],
+            [KeyboardButton("🎯 Конкретная дата")],
+            [KeyboardButton("❌ Отмена")]
         ],
         resize_keyboard=True
     )
     
     await message.answer("⏰ Выберите тип времени:", reply_markup=keyboard)
-    await state.set_state(NotificationStates.waiting_for_time_type)
+    await NotificationStates.waiting_for_time_type.set()
 
-@dp.message(NotificationStates.waiting_for_time_type)
+@dp.message_handler(state=NotificationStates.waiting_for_time_type)
 async def process_time_type(message: types.Message, state: FSMContext):
     time_type = message.text
     
     if time_type == "❌ Отмена":
-        await state.clear()
+        await state.finish()
         await cmd_start(message)
         return
     
@@ -221,18 +257,18 @@ async def process_time_type(message: types.Message, state: FSMContext):
     
     if time_type == "⏰ В часах":
         await message.answer("🕐 Через сколько часов уведомить? (введите число)")
-        await state.set_state(NotificationStates.waiting_for_hours)
+        await NotificationStates.waiting_for_hours.set()
     elif time_type == "📅 В днях":
         await message.answer("📅 Через сколько дней уведомить? (введите число)")
-        await state.set_state(NotificationStates.waiting_for_days)
+        await NotificationStates.waiting_for_days.set()
     elif time_type == "📆 В месяцах":
         await message.answer("📆 Через сколько месяцев уведомить? (введите число)")
-        await state.set_state(NotificationStates.waiting_for_months)
+        await NotificationStates.waiting_for_months.set()
     elif time_type == "🎯 Конкретная дата":
         await message.answer("📅 Введите дату в формате ГГГГ-ММ-ДД ЧЧ:ММ (например: 2024-12-31 23:59)")
-        await state.set_state(NotificationStates.waiting_for_specific_date)
+        await NotificationStates.waiting_for_specific_date.set()
 
-@dp.message(NotificationStates.waiting_for_hours)
+@dp.message_handler(state=NotificationStates.waiting_for_hours)
 async def process_hours(message: types.Message, state: FSMContext):
     try:
         hours = int(message.text)
@@ -250,7 +286,7 @@ async def process_hours(message: types.Message, state: FSMContext):
         }
         
         save_data()
-        await state.clear()
+        await state.finish()
         
         await message.answer(f"✅ Уведомление создано!\n"
                            f"📝 {data['text']}\n"
@@ -262,7 +298,7 @@ async def process_hours(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Введите корректное число часов!")
 
-@dp.message(NotificationStates.waiting_for_days)
+@dp.message_handler(state=NotificationStates.waiting_for_days)
 async def process_days(message: types.Message, state: FSMContext):
     try:
         days = int(message.text)
@@ -280,7 +316,7 @@ async def process_days(message: types.Message, state: FSMContext):
         }
         
         save_data()
-        await state.clear()
+        await state.finish()
         
         await message.answer(f"✅ Уведомление создано!\n"
                            f"📝 {data['text']}\n"
@@ -292,7 +328,7 @@ async def process_days(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Введите корректное число дней!")
 
-@dp.message(NotificationStates.waiting_for_months)
+@dp.message_handler(state=NotificationStates.waiting_for_months)
 async def process_months(message: types.Message, state: FSMContext):
     try:
         months = int(message.text)
@@ -310,7 +346,7 @@ async def process_months(message: types.Message, state: FSMContext):
         }
         
         save_data()
-        await state.clear()
+        await state.finish()
         
         await message.answer(f"✅ Уведомление создано!\n"
                            f"📝 {data['text']}\n"
@@ -322,7 +358,7 @@ async def process_months(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Введите корректное число месяцев!")
 
-@dp.message(NotificationStates.waiting_for_specific_date)
+@dp.message_handler(state=NotificationStates.waiting_for_specific_date)
 async def process_specific_date(message: types.Message, state: FSMContext):
     try:
         trigger_time = datetime.strptime(message.text, '%Y-%m-%d %H:%M')
@@ -343,7 +379,7 @@ async def process_specific_date(message: types.Message, state: FSMContext):
         }
         
         save_data()
-        await state.clear()
+        await state.finish()
         
         await message.answer(f"✅ Уведомление создано!\n"
                            f"📝 {data['text']}\n"
@@ -355,7 +391,7 @@ async def process_specific_date(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Неверный формат даты! Используйте: ГГГГ-ММ-ДД ЧЧ:ММ")
 
-@dp.message(lambda message: message.text == "📝 Список уведомлений")
+@dp.message_handler(lambda message: message.text == "📝 Список уведомлений")
 async def list_notifications(message: types.Message):
     if not notifications:
         await message.answer("📭 У вас нет активных уведомлений.")
@@ -368,44 +404,42 @@ async def list_notifications(message: types.Message):
         return
     
     text = "📋 Ваши уведомления:\n\n"
-    builder = InlineKeyboardBuilder()
+    keyboard = InlineKeyboardMarkup(row_width=1)
     
     for nid, notif in active_notifications.items():
         trigger_time = datetime.fromisoformat(notif['trigger_time'])
         text += f"🔔 #{nid}: {notif['text']}\n"
         text += f"⏰ {trigger_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        builder.add(InlineKeyboardButton(text=f"❌ Удалить #{nid}", callback_data=f"delete_{nid}"))
+        keyboard.add(InlineKeyboardButton(f"❌ Удалить #{nid}", callback_data=f"delete_{nid}"))
     
-    builder.adjust(1)
-    await message.answer(text, reply_markup=builder.as_markup())
+    await message.answer(text, reply_markup=keyboard)
 
-@dp.message(lambda message: message.text == "⚙️ Настройки")
+@dp.message_handler(lambda message: message.text == "⚙️ Настройки")
 async def settings_menu(message: types.Message):
-    builder = InlineKeyboardBuilder()
-    builder.add(InlineKeyboardButton(text="📁 Изменить путь для бэкапов", callback_data="change_backup_path"))
-    builder.add(InlineKeyboardButton(text="🔄 Создать бэкап сейчас", callback_data="backup_now"))
-    builder.add(InlineKeyboardButton(text="📊 Текущие настройки", callback_data="show_settings"))
-    builder.adjust(1)
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(InlineKeyboardButton("📁 Изменить путь для бэкапов", callback_data="change_backup_path"))
+    keyboard.add(InlineKeyboardButton("🔄 Создать бэкап сейчас", callback_data="backup_now"))
+    keyboard.add(InlineKeyboardButton("📊 Текущие настройки", callback_data="show_settings"))
     
-    await message.answer("⚙️ Настройки бота:", reply_markup=builder.as_markup())
+    await message.answer("⚙️ Настройки бота:", reply_markup=keyboard)
 
-@dp.callback_query(lambda c: c.data == "change_backup_path")
-async def change_backup_path(callback_query: types.CallbackQuery, state: FSMContext):
+@dp.callback_query_handler(lambda c: c.data == "change_backup_path")
+async def change_backup_path(callback_query: types.CallbackQuery):
     await callback_query.message.answer("📁 Введите новый путь на Яндекс.Диске для бэкапов:\n"
                                        "Пример: /Мои документы/Backups")
-    await state.set_state(SettingsStates.waiting_for_backup_path)
+    await SettingsStates.waiting_for_backup_path.set()
     await callback_query.answer()
 
-@dp.message(SettingsStates.waiting_for_backup_path)
+@dp.message_handler(state=SettingsStates.waiting_for_backup_path)
 async def process_backup_path(message: types.Message, state: FSMContext):
     new_path = message.text
     settings['backup_path'] = new_path
     save_data()
     
     await message.answer(f"✅ Путь для бэкапов изменен на: {new_path}")
-    await state.clear()
+    await state.finish()
 
-@dp.callback_query(lambda c: c.data == "backup_now")
+@dp.callback_query_handler(lambda c: c.data == "backup_now")
 async def backup_now(callback_query: types.CallbackQuery):
     await callback_query.answer("🔄 Создание бэкапа...")
     success = await create_backup("ручной бэкап")
@@ -415,7 +449,7 @@ async def backup_now(callback_query: types.CallbackQuery):
     else:
         await callback_query.message.answer("❌ Не удалось создать бэкап!")
 
-@dp.callback_query(lambda c: c.data == "show_settings")
+@dp.callback_query_handler(lambda c: c.data == "show_settings")
 async def show_settings(callback_query: types.CallbackQuery):
     text = f"""
 📊 ТЕКУЩИЕ НАСТРОЙКИ:
@@ -429,7 +463,7 @@ async def show_settings(callback_query: types.CallbackQuery):
     await callback_query.message.answer(text)
     await callback_query.answer()
 
-@dp.callback_query(lambda c: c.data and c.data.startswith('delete_'))
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('delete_'))
 async def delete_notification(callback_query: types.CallbackQuery):
     nid = int(callback_query.data.split('_')[1])
     
@@ -445,6 +479,50 @@ async def delete_notification(callback_query: types.CallbackQuery):
     
     await callback_query.answer()
 
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('complete_'))
+async def complete_notification(callback_query: types.CallbackQuery):
+    nid = int(callback_query.data.split('_')[1])
+    
+    if nid in notifications:
+        notifications[nid]['status'] = 'completed'
+        save_data()
+        await callback_query.message.answer(f"✅ Уведомление #{nid} выполнено!")
+        
+        success = await create_backup("выполнение уведомления")
+        await show_backup_message(callback_query.message, success)
+    
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('snooze_'))
+async def snooze_notification(callback_query: types.CallbackQuery, state: FSMContext):
+    nid = int(callback_query.data.split('_')[1])
+    await state.update_data(snooze_nid=nid)
+    await callback_query.message.answer("⏰ Через сколько часов напомнить? (введите число)")
+    await NotificationStates.waiting_for_snooze_hours.set()
+    await callback_query.answer()
+
+@dp.message_handler(state=NotificationStates.waiting_for_snooze_hours)
+async def process_snooze(message: types.Message, state: FSMContext):
+    try:
+        hours = int(message.text)
+        data = await state.get_data()
+        nid = data['snooze_nid']
+        
+        if nid in notifications:
+            new_time = datetime.now() + timedelta(hours=hours)
+            notifications[nid]['trigger_time'] = new_time.isoformat()
+            notifications[nid]['status'] = 'active'
+            save_data()
+            await message.answer(f"✅ Уведомление отложено на {hours} часов!")
+            
+            success = await create_backup("откладывание уведомления")
+            await show_backup_message(message, success)
+        
+        await state.finish()
+        
+    except ValueError:
+        await message.answer("❌ Введите корректное число часов!")
+
 async def check_notifications():
     """Фоновая проверка уведомлений"""
     while True:
@@ -452,20 +530,22 @@ async def check_notifications():
         to_notify = []
         
         for nid, notif in notifications.items():
-            if notif['status'] == 'active':
+            if notif.get('status') == 'active':
                 trigger_time = datetime.fromisoformat(notif['trigger_time'])
                 if now >= trigger_time:
                     to_notify.append((nid, notif))
         
         for nid, notif in to_notify:
-            builder = InlineKeyboardBuilder()
-            builder.add(InlineKeyboardButton(text="✅ Выполнено (удалить)", callback_data=f"complete_{nid}"))
-            builder.add(InlineKeyboardButton(text="⏰ Отложить", callback_data=f"snooze_{nid}"))
+            keyboard = InlineKeyboardMarkup(row_width=2)
+            keyboard.add(
+                InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{nid}"),
+                InlineKeyboardButton("⏰ Отложить", callback_data=f"snooze_{nid}")
+            )
             
             await bot.send_message(
                 ADMIN_ID,
                 f"🔔 НАПОМИНАНИЕ!\n\n📝 {notif['text']}\n\nВыберите действие:",
-                reply_markup=builder.as_markup()
+                reply_markup=keyboard
             )
             
             notifications[nid]['status'] = 'notified'
@@ -473,14 +553,12 @@ async def check_notifications():
         
         await asyncio.sleep(60)
 
-async def main():
-    load_data()
+async def on_startup(dp):
+    asyncio.create_task(daily_check())
     asyncio.create_task(check_notifications())
-    
-    try:
-        await dp.start_polling(bot, skip_updates=True)
-    finally:
-        await bot.session.close()
+    print("Бот запущен!")
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    load_data()
+    from aiogram import executor
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
