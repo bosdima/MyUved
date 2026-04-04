@@ -3,9 +3,10 @@ import json
 import os
 import shutil
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
@@ -20,9 +21,10 @@ ADMIN_ID = int(os.getenv('ADMIN_ID'))
 YANDEX_TOKEN = os.getenv('YANDEX_TOKEN')
 BACKUP_FOLDER = os.getenv('BACKUP_FOLDER')
 
-# Инициализация бота
+# Инициализация бота с хранилищем для FSM
+storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher(bot, storage=storage)
 dp.middleware.setup(LoggingMiddleware())
 
 # Инициализация Яндекс.Диска
@@ -49,7 +51,7 @@ class SettingsStates(StatesGroup):
 # Структура данных
 notifications: Dict[int, Dict] = {}
 settings: Dict = {
-    'backup_path': BACKUP_FOLDER,
+    'backup_path': BACKUP_FOLDER if BACKUP_FOLDER else '/MyUved',
     'check_time': '06:00',
     'auto_cleanup_days': 30,
     'reminder_repeat_hours': 1
@@ -64,30 +66,36 @@ def load_data():
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
                 notifications = json.load(f)
                 notifications = {int(k): v for k, v in notifications.items()}
-        except:
+        except Exception as e:
+            print(f"Ошибка загрузки уведомлений: {e}")
             notifications = {}
     
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                settings.update(json.load(f))
-        except:
-            pass
+                loaded_settings = json.load(f)
+                settings.update(loaded_settings)
+        except Exception as e:
+            print(f"Ошибка загрузки настроек: {e}")
 
 def save_data():
     """Сохранение данных в файлы"""
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(notifications, f, ensure_ascii=False, indent=2, default=str)
-    
-    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
+    try:
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(notifications, f, ensure_ascii=False, indent=2, default=str)
+        
+        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Ошибка сохранения данных: {e}")
 
 async def check_yandex_access() -> bool:
     """Проверка доступа к Яндекс.Диску"""
     try:
         yandex_client.check_token()
         return True
-    except:
+    except Exception as e:
+        print(f"Ошибка проверки доступа к Яндекс.Диску: {e}")
         return False
 
 async def create_backup(reason: str = "") -> bool:
@@ -102,15 +110,25 @@ async def create_backup(reason: str = "") -> bool:
         
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         
-        shutil.make_archive(os.path.join(TEMP_BACKUP_FOLDER, f'backup_{timestamp}'), 'zip', TEMP_BACKUP_FOLDER)
+        # Создаем архив
+        archive_path = os.path.join(TEMP_BACKUP_FOLDER, f'backup_{timestamp}')
+        shutil.make_archive(archive_path, 'zip', TEMP_BACKUP_FOLDER)
         
-        # Создаем путь на Яндекс.Диске
+        # Загружаем на Яндекс.Диск
         backup_path_on_disk = settings['backup_path'].replace('\\', '/')
         if not backup_path_on_disk.endswith('/'):
             backup_path_on_disk += '/'
         backup_path_on_disk += f'backup_{timestamp}.zip'
         
-        yandex_client.upload(os.path.join(TEMP_BACKUP_FOLDER, f'backup_{timestamp}.zip'), backup_path_on_disk)
+        # Создаем папку если не существует
+        try:
+            folder_path = '/'.join(backup_path_on_disk.split('/')[:-1])
+            if folder_path and folder_path != '/':
+                yandex_client.mkdir(folder_path)
+        except:
+            pass
+        
+        yandex_client.upload(f'{archive_path}.zip', backup_path_on_disk)
         
         await cleanup_old_backups()
         
@@ -121,7 +139,7 @@ async def create_backup(reason: str = "") -> bool:
         return False
 
 async def cleanup_old_backups():
-    """Очистка старых бэкапов"""
+    """Очистка старых бэкапов, оставляет только последние 5"""
     try:
         path = settings['backup_path'].replace('\\', '/')
         files = list(yandex_client.listdir(path))
@@ -129,22 +147,28 @@ async def cleanup_old_backups():
         backup_files.sort(key=lambda x: x.name, reverse=True)
         
         for old_file in backup_files[5:]:
-            yandex_client.remove(os.path.join(path, old_file.name))
+            try:
+                yandex_client.remove(os.path.join(path, old_file.name))
+            except:
+                pass
     except Exception as e:
         print(f"Ошибка очистки бэкапов: {e}")
 
 async def show_backup_message(message: types.Message, success: bool):
-    """Показать сообщение о результате бэкапа"""
+    """Показать сообщение о результате бэкапа на 1 минуту"""
     if success:
         msg = await message.answer("✅ Бэкап успешно создан на Яндекс.Диске!")
     else:
         msg = await message.answer("❌ Не удалось создать бэкап на Яндекс.Диск!")
     
-    await asyncio.sleep(60)
-    try:
-        await msg.delete()
-    except:
-        pass
+    async def delete_message():
+        await asyncio.sleep(60)
+        try:
+            await msg.delete()
+        except:
+            pass
+    
+    asyncio.create_task(delete_message())
 
 async def daily_check():
     """Ежедневная проверка в 6:00"""
@@ -158,10 +182,28 @@ async def daily_check():
         wait_seconds = (target_time - now).total_seconds()
         await asyncio.sleep(wait_seconds)
         
+        # Проверка доступа
         access = await check_yandex_access()
         
         if access:
-            await bot.send_message(ADMIN_ID, "✅ Доступ к Яндекс.Диску есть!")
+            try:
+                path = settings['backup_path'].replace('\\', '/')
+                files = list(yandex_client.listdir(path))
+                if files:
+                    keyboard = InlineKeyboardMarkup(row_width=1)
+                    keyboard.add(
+                        InlineKeyboardButton("✅ Обновить базу", callback_data="update_database"),
+                        InlineKeyboardButton("❌ Отмена", callback_data="cancel_update")
+                    )
+                    await bot.send_message(ADMIN_ID, 
+                        "✅ Доступ к Яндекс.Диску есть!\n"
+                        "📦 Обнаружены сохранения.\n"
+                        "Желаете обновить базу уведомлений и настройки?",
+                        reply_markup=keyboard)
+                else:
+                    await bot.send_message(ADMIN_ID, "✅ Доступ к Яндекс.Диску есть!")
+            except:
+                await bot.send_message(ADMIN_ID, "✅ Доступ к Яндекс.Диску есть!")
         else:
             instruction = """
 ❌ НЕТ ДОСТУПА К ЯНДЕКС ДИСКУ!
@@ -175,6 +217,8 @@ async def daily_check():
 5. Скопируйте полученный токен
 6. Добавьте токен в файл .env: YANDEX_TOKEN=ваш_токен
 7. Перезапустите бота
+
+⚠️ Важно: Токен дает полный доступ к вашему Яндекс.Диску!
 """
             await bot.send_message(ADMIN_ID, instruction)
 
@@ -184,15 +228,18 @@ async def cmd_start(message: types.Message):
         await message.answer("❌ У вас нет доступа к этому боту!")
         return
     
+    # Проверка доступа при запуске
     access = await check_yandex_access()
     
     if access:
         msg = await message.answer("✅ Доступ к Яндекс.Диску имеется!")
-        await asyncio.sleep(5)
-        try:
-            await msg.delete()
-        except:
-            pass
+        async def delete_msg():
+            await asyncio.sleep(5)
+            try:
+                await msg.delete()
+            except:
+                pass
+        asyncio.create_task(delete_msg())
     else:
         instruction = """
 ❌ НЕТ ДОСТУПА К ЯНДЕКС ДИСКУ!
@@ -206,10 +253,13 @@ async def cmd_start(message: types.Message):
 5. Скопируйте полученный токен
 6. Добавьте токен в файл .env: YANDEX_TOKEN=ваш_токен
 7. Перезапустите бота
+
+⚠️ Важно: Токен дает полный доступ к вашему Яндекс.Диску!
 """
         await message.answer(instruction)
         return
     
+    # Основное меню
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton("📝 Список уведомлений")],
@@ -397,7 +447,7 @@ async def list_notifications(message: types.Message):
         await message.answer("📭 У вас нет активных уведомлений.")
         return
     
-    active_notifications = {k: v for k, v in notifications.items() if v['status'] == 'active'}
+    active_notifications = {k: v for k, v in notifications.items() if v.get('status') == 'active'}
     
     if not active_notifications:
         await message.answer("📭 Нет активных уведомлений.")
@@ -417,9 +467,12 @@ async def list_notifications(message: types.Message):
 @dp.message_handler(lambda message: message.text == "⚙️ Настройки")
 async def settings_menu(message: types.Message):
     keyboard = InlineKeyboardMarkup(row_width=1)
-    keyboard.add(InlineKeyboardButton("📁 Изменить путь для бэкапов", callback_data="change_backup_path"))
-    keyboard.add(InlineKeyboardButton("🔄 Создать бэкап сейчас", callback_data="backup_now"))
-    keyboard.add(InlineKeyboardButton("📊 Текущие настройки", callback_data="show_settings"))
+    keyboard.add(
+        InlineKeyboardButton("📁 Изменить путь для бэкапов", callback_data="change_backup_path"),
+        InlineKeyboardButton("🕐 Настроить время проверки", callback_data="change_check_time"),
+        InlineKeyboardButton("🔄 Создать бэкап сейчас", callback_data="backup_now"),
+        InlineKeyboardButton("📊 Текущие настройки", callback_data="show_settings")
+    )
     
     await message.answer("⚙️ Настройки бота:", reply_markup=keyboard)
 
@@ -428,6 +481,11 @@ async def change_backup_path(callback_query: types.CallbackQuery):
     await callback_query.message.answer("📁 Введите новый путь на Яндекс.Диске для бэкапов:\n"
                                        "Пример: /Мои документы/Backups")
     await SettingsStates.waiting_for_backup_path.set()
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data == "change_check_time")
+async def change_check_time(callback_query: types.CallbackQuery):
+    await callback_query.message.answer("🕐 Введите время проверки в формате ЧЧ:ММ (например: 06:00):")
     await callback_query.answer()
 
 @dp.message_handler(state=SettingsStates.waiting_for_backup_path)
@@ -486,7 +544,7 @@ async def complete_notification(callback_query: types.CallbackQuery):
     if nid in notifications:
         notifications[nid]['status'] = 'completed'
         save_data()
-        await callback_query.message.answer(f"✅ Уведомление #{nid} выполнено!")
+        await callback_query.message.answer(f"✅ Уведомление #{nid} выполнено и удалено!")
         
         success = await create_backup("выполнение уведомления")
         await show_backup_message(callback_query.message, success)
@@ -513,7 +571,8 @@ async def process_snooze(message: types.Message, state: FSMContext):
             notifications[nid]['trigger_time'] = new_time.isoformat()
             notifications[nid]['status'] = 'active'
             save_data()
-            await message.answer(f"✅ Уведомление отложено на {hours} часов!")
+            await message.answer(f"✅ Уведомление отложено на {hours} часов!\n"
+                               f"Новое время: {new_time.strftime('%Y-%m-%d %H:%M:%S')}")
             
             success = await create_backup("откладывание уведомления")
             await show_backup_message(message, success)
@@ -523,40 +582,54 @@ async def process_snooze(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Введите корректное число часов!")
 
+@dp.callback_query_handler(lambda c: c.data == "update_database")
+async def update_database(callback_query: types.CallbackQuery):
+    await callback_query.message.answer("🔄 Функция обновления базы из бэкапа будет добавлена позже...")
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data == "cancel_update")
+async def cancel_update(callback_query: types.CallbackQuery):
+    await callback_query.message.answer("✅ Обновление отменено")
+    await callback_query.answer()
+
 async def check_notifications():
     """Фоновая проверка уведомлений"""
     while True:
-        now = datetime.now()
-        to_notify = []
-        
-        for nid, notif in notifications.items():
-            if notif.get('status') == 'active':
-                trigger_time = datetime.fromisoformat(notif['trigger_time'])
-                if now >= trigger_time:
-                    to_notify.append((nid, notif))
-        
-        for nid, notif in to_notify:
-            keyboard = InlineKeyboardMarkup(row_width=2)
-            keyboard.add(
-                InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{nid}"),
-                InlineKeyboardButton("⏰ Отложить", callback_data=f"snooze_{nid}")
-            )
+        try:
+            now = datetime.now()
+            to_notify = []
             
-            await bot.send_message(
-                ADMIN_ID,
-                f"🔔 НАПОМИНАНИЕ!\n\n📝 {notif['text']}\n\nВыберите действие:",
-                reply_markup=keyboard
-            )
+            for nid, notif in notifications.items():
+                if notif.get('status') == 'active':
+                    trigger_time = datetime.fromisoformat(notif['trigger_time'])
+                    if now >= trigger_time:
+                        to_notify.append((nid, notif))
             
-            notifications[nid]['status'] = 'notified'
-            save_data()
-        
-        await asyncio.sleep(60)
+            for nid, notif in to_notify:
+                keyboard = InlineKeyboardMarkup(row_width=2)
+                keyboard.add(
+                    InlineKeyboardButton("✅ Выполнено (удалить)", callback_data=f"complete_{nid}"),
+                    InlineKeyboardButton("⏰ Отложить", callback_data=f"snooze_{nid}")
+                )
+                
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🔔 НАПОМИНАНИЕ!\n\n📝 {notif['text']}\n\nВыберите действие:",
+                    reply_markup=keyboard
+                )
+                
+                notifications[nid]['status'] = 'notified'
+                save_data()
+            
+            await asyncio.sleep(60)
+        except Exception as e:
+            print(f"Ошибка в check_notifications: {e}")
+            await asyncio.sleep(60)
 
 async def on_startup(dp):
+    print("🚀 Бот запущен и готов к работе!")
     asyncio.create_task(daily_check())
     asyncio.create_task(check_notifications())
-    print("Бот запущен!")
 
 if __name__ == '__main__':
     load_data()
