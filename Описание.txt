@@ -30,7 +30,12 @@
 
 BOT_TOKEN=8639698905:AAFOVikmai5gzb-IMHBVWStlbTuwy8lYQrM
 ADMIN_ID=128382766
-YANDEX_TOKEN=y0__xD3g8MkGKbDPyDzv_XwFjD88PSlCI6rJ_SDdum4QKWl4xlLxh3wtJm4
+# Yandex.Disk OAuth credentials
+CLIENT_ID=5b91097685e2419eb0da38c4b4fc345b
+CLIENT_SECRET=d855d1d659484fe493df90bbd5d2ecfb
+REDIRECT_URI=https://oauth.yandex.ru/verification_code
 BACKUP_FOLDER=Мои Документы\Програмирование\Bot_Telegram\Python\babit\MyUved
 
-бот будет работать и запущен на сайте bothost.ru (в котором бот запускается в контейнере а переменные загружаются через фаил .env)
+бот будет работать и запущен на сайте bothost.ru
+Версия Python 3.13
+ (в котором бот запускается в контейнере а переменные загружаются через фаил .env)
