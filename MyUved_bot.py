@@ -605,7 +605,8 @@ async def ask_for_code(callback: types.CallbackQuery):
         callback.from_user.id,
         f"🔑 **Введите код авторизации**\n\n"
         f"Отправьте код, который вы получили после авторизации:\n"
-        f"📝 Пример: `5j4iyexor5ltn4ym`",
+        f"📝 Пример: `5j4iyexor5ltn4ym`\n\n"
+        f"💡 **Важно:** Код нужно ввести текстовым сообщением!",
         parse_mode='Markdown'
     )
     await AuthStates.waiting_for_yandex_code.set()
@@ -643,6 +644,7 @@ async def receive_code(message: types.Message, state: FSMContext):
         await message.reply("❌ **Ошибка!** Отправьте код авторизации.", parse_mode='Markdown')
         return
     
+    # Отправляем сообщение о начале обработки
     status_msg = await message.reply("⏳ **Получение токена...**", parse_mode='Markdown')
     
     token = await get_access_token(code)
