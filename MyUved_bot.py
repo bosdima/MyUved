@@ -13,6 +13,8 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.dispatcher.storage import FSMContextStorage
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils import executor
 from dotenv import load_dotenv
@@ -35,9 +37,10 @@ if not all([BOT_TOKEN, CLIENT_ID, CLIENT_SECRET]):
     print("❌ Ошибка: Не все переменные окружения заданы!")
     exit(1)
 
-# Инициализация бота
+# Инициализация бота с MemoryStorage для FSM
+storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher(bot, storage=storage)
 dp.middleware.setup(LoggingMiddleware())
 
 # Файлы для хранения данных
