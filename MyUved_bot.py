@@ -114,7 +114,7 @@ class YandexDiskAPI:
         }
     
     async def check_access_async(self):
-        """ИСПРАВЛЕННАЯ проверка доступа к Яндекс.Диску"""
+        """ИСПРАВЛЕННАЯ проверка доступа к Яндекс.Диску - без булевых значений"""
         try:
             # Проверяем базовый доступ
             url = f"{self.base_url}/"
@@ -126,26 +126,21 @@ class YandexDiskAPI:
             # Пытаемся создать тестовую папку
             test_folder = f"/test_folder_{int(datetime.now().timestamp())}"
             create_url = f"{self.base_url}/resources"
-            
-            # ВАЖНО: params должен быть словарем со строковыми значениями
             params = {"path": test_folder}
             
             async with aiohttp.ClientSession() as session:
-                # Создаем папку
                 async with session.put(create_url, headers=self.headers, params=params) as response:
                     if response.status in [200, 201, 202]:
-                        # Папка создана - удаляем её
                         async with session.delete(create_url, headers=self.headers, params=params) as del_response:
                             return True, "Есть права на запись! Тестовая папка создана и удалена."
                     else:
                         return False, f"Нет прав на запись (код: {response.status})"
-                        
         except Exception as e:
             print(f"Ошибка проверки доступа: {e}")
             return False, str(e)
     
     def check_access(self):
-        """Синхронная проверка доступа (для совместимости)"""
+        """Синхронная проверка доступа"""
         try:
             url = f"{self.base_url}/"
             response = requests.get(url, headers=self.headers, timeout=10)
@@ -162,7 +157,6 @@ class YandexDiskAPI:
                 return True, "Есть права на запись"
             else:
                 return False, "Нет прав на запись"
-                
         except Exception as e:
             print(f"Ошибка проверки доступа: {e}")
             return False, str(e)
@@ -171,7 +165,8 @@ class YandexDiskAPI:
         """Загружает текстовое содержимое как файл на Яндекс.Диск"""
         try:
             url = f"{self.base_url}/resources/upload"
-            params = {"path": remote_path, "overwrite": "true"}  # строка, а не bool
+            # ВАЖНО: overwrite должен быть строкой "true", а не булевым True
+            params = {"path": remote_path, "overwrite": "true"}
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=self.headers, params=params) as response:
@@ -206,7 +201,8 @@ class YandexDiskAPI:
         """Удаляет файл или папку на Яндекс.Диске"""
         try:
             url = f"{self.base_url}/resources"
-            params = {"path": remote_path, "permanently": "true"}  # строка, а не bool
+            # ВАЖНО: permanently должен быть строкой "true", а не булевым True
+            params = {"path": remote_path, "permanently": "true"}
             
             async with aiohttp.ClientSession() as session:
                 async with session.delete(url, headers=self.headers, params=params) as response:
