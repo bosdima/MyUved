@@ -4,7 +4,8 @@ import os
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
+from urllib.parse import urlencode
 
 import aiohttp
 import requests
@@ -16,14 +17,23 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeybo
 from aiogram.utils import executor
 from dotenv import load_dotenv
 
+# Версия бота
+BOT_VERSION = "2.0"
+BOT_VERSION_DATE = "05.04.2026"
+
 # Загрузка переменных окружения
 load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_ID'))
+ADMIN_ID = int(os.getenv('ADMIN_ID')) if os.getenv('ADMIN_ID') else None
 CLIENT_ID = os.getenv('CLIENT_ID')
 CLIENT_SECRET = os.getenv('CLIENT_SECRET')
 REDIRECT_URI = os.getenv('REDIRECT_URI', 'https://oauth.yandex.ru/verification_code')
+
+# Проверка наличия всех необходимых переменных
+if not all([BOT_TOKEN, CLIENT_ID, CLIENT_SECRET]):
+    print("❌ Ошибка: Не все переменные окружения заданы!")
+    exit(1)
 
 # Инициализация бота
 bot = Bot(token=BOT_TOKEN)
@@ -33,22 +43,61 @@ dp.middleware.setup(LoggingMiddleware())
 # Файлы для хранения данных
 DATA_FILE = 'notifications.json'
 CONFIG_FILE = 'config.json'
-TOKEN_FILE = 'yandex_token.json'
+TOKEN_FILE = 'user_tokens.json'  # Изменено для поддержки нескольких пользователей
 BACKUP_DIR = 'backups'
 
 # Глобальные переменные
 notifications: Dict = {}
 config: Dict = {}
-yandex_token = None
-yandex_disk = None
-notifications_enabled = True  # Флаг включения/отключения уведомлений
+user_tokens: Dict[int, str] = {}  # user_id -> token
+yandex_disk_cache: Dict[int, Any] = {}  # Кэш для API
+notifications_enabled = True
+
+# URL для Яндекс.Диск API
+YANDEX_API_BASE = "https://cloud-api.yandex.net/v1/disk"
+YANDEX_OAUTH_URL = "https://oauth.yandex.ru/authorize"
 
 
-# Класс для работы с Яндекс.Диском через API
+def get_auth_url() -> str:
+    """Получение URL для авторизации в Яндекс"""
+    params = {
+        "response_type": "code",
+        "client_id": CLIENT_ID,
+        "redirect_uri": REDIRECT_URI
+    }
+    return f"{YANDEX_OAUTH_URL}?{urlencode(params)}"
+
+
+async def get_access_token(auth_code: str) -> Optional[str]:
+    """Получение access token по коду авторизации"""
+    url = "https://oauth.yandex.ru/token"
+    data = {
+        "grant_type": "authorization_code",
+        "code": auth_code,
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, data=data) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result.get("access_token")
+                else:
+                    error_text = await response.text()
+                    print(f"Ошибка получения токена: {response.status} - {error_text}")
+                    return None
+        except Exception as e:
+            print(f"Исключение при получении токена: {e}")
+            return None
+
+
+# Класс для работы с Яндекс.Диском через API (обновлен)
 class YandexDiskAPI:
     def __init__(self, token):
         self.token = token
-        self.base_url = "https://cloud-api.yandex.net/v1/disk"
+        self.base_url = YANDEX_API_BASE
         self.headers = {
             "Authorization": f"OAuth {token}",
             "Content-Type": "application/json"
@@ -57,19 +106,16 @@ class YandexDiskAPI:
     def check_access(self):
         """Проверяет доступ к Яндекс.Диску и права на запись"""
         try:
-            # Проверяем основной доступ
             url = f"{self.base_url}/"
             response = requests.get(url, headers=self.headers, timeout=10)
             if response.status_code != 200:
                 return False, "Нет доступа к диску"
             
-            # Проверяем права на запись (пытаемся создать тестовую папку)
             test_folder = "/_test_permissions_" + datetime.now().strftime('%Y%m%d_%H%M%S')
             create_url = f"{self.base_url}/resources"
             params = {"path": test_folder}
             create_response = requests.put(create_url, headers=self.headers, params=params, timeout=10)
             
-            # Если папка создалась - удаляем её
             if create_response.status_code in [200, 201, 202]:
                 delete_response = requests.delete(create_url, headers=self.headers, params=params, timeout=10)
                 return True, "Есть права на запись"
@@ -154,18 +200,18 @@ class YandexDiskAPI:
             return False
 
 
-# Состояния FSM
+# Состояния FSM (исправлены)
 class AuthStates(StatesGroup):
     waiting_for_yandex_code = State()
 
 
 class NotificationStates(StatesGroup):
     waiting_for_text = State()
+    waiting_for_time_type = State()
     waiting_for_hours = State()
     waiting_for_days = State()
     waiting_for_months = State()
     waiting_for_specific_date = State()
-    waiting_for_snooze_hours = State()
 
 
 class SettingsStates(StatesGroup):
@@ -192,21 +238,22 @@ def init_folders():
 
 
 def load_data():
-    global notifications, config, yandex_token, notifications_enabled
+    global notifications, config, user_tokens, notifications_enabled
     with open(DATA_FILE, 'r') as f:
         notifications = json.load(f)
     with open(CONFIG_FILE, 'r') as f:
         config = json.load(f)
         notifications_enabled = config.get('notifications_enabled', True)
     
-    # Загружаем сохраненный токен
+    # Загружаем сохраненные токены пользователей
     if os.path.exists(TOKEN_FILE):
         try:
             with open(TOKEN_FILE, 'r') as f:
                 token_data = json.load(f)
-                yandex_token = token_data.get('token')
+                # Конвертируем ключи из строк в int
+                user_tokens = {int(k): v for k, v in token_data.items()}
         except:
-            pass
+            user_tokens = {}
 
 
 def save_data():
@@ -216,57 +263,45 @@ def save_data():
         json.dump(config, f, indent=2, ensure_ascii=False)
 
 
-def save_yandex_token(token):
-    """Сохраняет токен Яндекс.Диска"""
-    global yandex_token
-    yandex_token = token
+def save_user_token(user_id: int, token: str):
+    """Сохраняет токен пользователя"""
+    global user_tokens
+    user_tokens[user_id] = token
+    # Сохраняем все токены
     with open(TOKEN_FILE, 'w') as f:
-        json.dump({'token': token, 'saved_at': datetime.now().isoformat()}, f)
+        json.dump({str(k): v for k, v in user_tokens.items()}, f, indent=2)
 
 
-# Получение токена по коду
-async def exchange_code_for_token(code):
-    """Обменивает код авторизации на токен"""
-    try:
-        url = "https://oauth.yandex.ru/token"
-        data = {
-            "grant_type": "authorization_code",
-            "code": code,
-            "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=data) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    return result.get("access_token")
-                else:
-                    error_text = await response.text()
-                    print(f"Ошибка получения токена: {error_text}")
-                    return None
-    except Exception as e:
-        print(f"Ошибка обмена кода на токен: {e}")
-        return None
+def get_user_token(user_id: int) -> Optional[str]:
+    """Получает токен пользователя"""
+    return user_tokens.get(user_id)
 
 
-# Проверка доступа к Яндекс.Диску
-async def check_yandex_access() -> tuple:
-    global yandex_disk
+def delete_user_token(user_id: int):
+    """Удаляет токен пользователя"""
+    if user_id in user_tokens:
+        del user_tokens[user_id]
+        with open(TOKEN_FILE, 'w') as f:
+            json.dump({str(k): v for k, v in user_tokens.items()}, f, indent=2)
+
+
+# Проверка доступа к Яндекс.Диску для пользователя
+async def check_yandex_access(user_id: int) -> tuple:
+    token = get_user_token(user_id)
     
-    if not yandex_token:
+    if not token:
         return False, "Нет токена авторизации"
     
     try:
-        yandex_disk = YandexDiskAPI(yandex_token)
+        yandex_disk = YandexDiskAPI(token)
         access, message = yandex_disk.check_access()
         
         if access:
             # Создаем папку для бэкапов если её нет
             yandex_disk.create_folder(config['backup_path'])
-            print("✅ Доступ к Яндекс.Диску успешно получен")
+            print(f"✅ Доступ к Яндекс.Диску для user {user_id} успешно получен")
         else:
-            print(f"❌ Нет доступа к Яндекс.Диску: {message}")
+            print(f"❌ Нет доступа к Яндекс.Диску для user {user_id}: {message}")
         
         return access, message
     except Exception as e:
@@ -275,7 +310,7 @@ async def check_yandex_access() -> tuple:
 
 
 # Создание бэкапа
-async def create_backup(show_message=True) -> tuple:
+async def create_backup(user_id: int = None, show_message=True) -> tuple:
     try:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         backup_file = Path(BACKUP_DIR) / f'backup_{timestamp}.json'
@@ -289,45 +324,51 @@ async def create_backup(show_message=True) -> tuple:
         with open(backup_file, 'w', encoding='utf-8') as f:
             json.dump(backup_data, f, indent=2, ensure_ascii=False)
         
-        if yandex_disk:
-            access, _ = await check_yandex_access()
-            if access:
-                remote_path = f"{config['backup_path']}/backup_{timestamp}.json"
-                yandex_disk.create_folder(config['backup_path'])
-                
-                if yandex_disk.upload_file(str(backup_file), remote_path):
-                    await cleanup_old_backups()
-                    print(f"✅ Бэкап успешно создан: {backup_file}")
-                    return True, backup_file
+        # Если есть пользователь с токеном, загружаем на его диск
+        if user_id:
+            token = get_user_token(user_id)
+            if token:
+                yandex_disk = YandexDiskAPI(token)
+                access, _ = await check_yandex_access(user_id)
+                if access:
+                    remote_path = f"{config['backup_path']}/backup_{timestamp}.json"
+                    yandex_disk.create_folder(config['backup_path'])
+                    
+                    if yandex_disk.upload_file(str(backup_file), remote_path):
+                        await cleanup_old_backups(user_id)
+                        print(f"✅ Бэкап успешно создан: {backup_file}")
+                        return True, backup_file
+                    else:
+                        print("❌ Ошибка загрузки на Яндекс.Диск")
+                        return False, None
                 else:
-                    print("❌ Ошибка загрузки на Яндекс.Диск")
+                    print("❌ Яндекс.Диск не доступен")
                     return False, None
-            else:
-                print("❌ Яндекс.Диск не доступен")
-                return False, None
-        else:
-            return False, None
+        return False, None
     except Exception as e:
         print(f"Ошибка создания бэкапа: {e}")
         return False, None
 
 
-async def cleanup_old_backups():
+async def cleanup_old_backups(user_id: int = None):
     """Оставляет только последние 5 бэкапов"""
     try:
-        if yandex_disk:
-            access, _ = await check_yandex_access()
-            if access:
-                files = yandex_disk.list_files(config['backup_path'])
-                backup_files = [f for f in files if f['name'].startswith('backup_')]
-                
-                backup_files.sort(key=lambda x: x['name'], reverse=True)
-                max_backups = config.get('max_backups', 5)
-                
-                for old_file in backup_files[max_backups:]:
-                    remote_path = f"{config['backup_path']}/{old_file['name']}"
-                    yandex_disk.delete_file(remote_path)
-                    print(f"Удален старый бэкап: {old_file['name']}")
+        if user_id:
+            token = get_user_token(user_id)
+            if token:
+                yandex_disk = YandexDiskAPI(token)
+                access, _ = await check_yandex_access(user_id)
+                if access:
+                    files = yandex_disk.list_files(config['backup_path'])
+                    backup_files = [f for f in files if f['name'].startswith('backup_')]
+                    
+                    backup_files.sort(key=lambda x: x['name'], reverse=True)
+                    max_backups = config.get('max_backups', 5)
+                    
+                    for old_file in backup_files[max_backups:]:
+                        remote_path = f"{config['backup_path']}/{old_file['name']}"
+                        yandex_disk.delete_file(remote_path)
+                        print(f"Удален старый бэкап: {old_file['name']}")
         
         local_backups = sorted(Path(BACKUP_DIR).glob('backup_*.json'))
         max_backups = config.get('max_backups', 5)
@@ -345,7 +386,7 @@ async def check_notifications():
         if notifications_enabled:
             now = datetime.now()
             
-            for notif_id, notif in notifications.items():
+            for notif_id, notif in list(notifications.items()):
                 notify_time = datetime.fromisoformat(notif['time'])
                 
                 if now >= notify_time and not notif.get('notified', False):
@@ -367,22 +408,26 @@ async def check_notifications():
         await asyncio.sleep(30)
 
 
-# Ежедневная проверка (только проверка доступа, без лишних сообщений)
+# Ежедневная проверка
+checking_daily = False
 async def daily_check():
     global checking_daily
     while True:
         now = datetime.now()
-        target_time = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        check_time = config.get('daily_check_time', '06:00')
+        check_hour, check_minute = map(int, check_time.split(':'))
+        target_time = now.replace(hour=check_hour, minute=check_minute, second=0, microsecond=0)
         
         if now >= target_time and not checking_daily:
             checking_daily = True
             
-            # Просто проверяем доступ, не отправляем сообщений
-            access, message = await check_yandex_access()
-            if not access:
-                print(f"❌ Ежедневная проверка: нет доступа к Яндекс.Диску - {message}")
-            else:
-                print("✅ Ежедневная проверка: доступ к Яндекс.Диску есть")
+            # Проверяем доступ для администратора
+            if ADMIN_ID:
+                access, message = await check_yandex_access(ADMIN_ID)
+                if not access:
+                    print(f"❌ Ежедневная проверка: нет доступа к Яндекс.Диску - {message}")
+                else:
+                    print("✅ Ежедневная проверка: доступ к Яндекс.Диску есть")
             
             await asyncio.sleep(60)
             checking_daily = False
@@ -390,28 +435,8 @@ async def daily_check():
         await asyncio.sleep(30)
 
 
-# Команда /start
-@dp.message_handler(commands=['start'])
-async def cmd_start(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.reply("❌ У вас нет доступа к этому боту")
-        return
-    
-    access, access_message = await check_yandex_access()
-    
-    if access:
-        await message.reply("✅ **Доступ к Яндекс.Диску имеется!**", parse_mode='Markdown')
-    else:
-        keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("🔑 Авторизовать Яндекс.Диск", callback_data="auth_yandex"))
-        
-        await message.reply(
-            f"⚠️ **Нет доступа к Яндекс.Диску!**\n\nПричина: {access_message}\n\n"
-            "Для работы бэкапов необходимо авторизоваться.",
-            reply_markup=keyboard,
-            parse_mode='Markdown'
-        )
-    
+# Основная клавиатура
+def get_main_keyboard():
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     keyboard.add(
         KeyboardButton("➕ Добавить уведомление"),
@@ -421,27 +446,73 @@ async def cmd_start(message: types.Message):
         KeyboardButton("⚙️ Настройки"),
         KeyboardButton("💾 Создать бэкап")
     )
+    return keyboard
+
+
+# Команда /start
+@dp.message_handler(commands=['start'])
+async def cmd_start(message: types.Message):
+    if ADMIN_ID and message.from_user.id != ADMIN_ID:
+        await message.reply("❌ У вас нет доступа к этому боту")
+        return
+    
+    user_id = message.from_user.id
+    token = get_user_token(user_id)
+    
+    if token:
+        access, access_message = await check_yandex_access(user_id)
+        if access:
+            await message.reply(
+                f"✅ **Доступ к Яндекс.Диску имеется!**\n\n"
+                f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE})",
+                parse_mode='Markdown'
+            )
+        else:
+            keyboard = InlineKeyboardMarkup()
+            keyboard.add(InlineKeyboardButton("🔑 Авторизовать Яндекс.Диск", callback_data="auth_yandex"))
+            
+            await message.reply(
+                f"⚠️ **Нет доступа к Яндекс.Диску!**\n\n"
+                f"Причина: {access_message}\n\n"
+                f"Для работы бэкапов необходимо авторизоваться.\n\n"
+                f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE})",
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+    else:
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(InlineKeyboardButton("🔑 Авторизовать Яндекс.Диск", callback_data="auth_yandex"))
+        
+        await message.reply(
+            f"👋 **Добро пожаловать!**\n\n"
+            f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE})\n\n"
+            f"⚠️ **Нет доступа к Яндекс.Диску!**\n\n"
+            f"Для работы бэкапов необходимо авторизоваться.",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
     
     await message.reply(
-        "👋 **Добро пожаловать!**\n\n"
-        "Выберите действие:",
-        reply_markup=keyboard,
+        "👋 **Выберите действие:**",
+        reply_markup=get_main_keyboard(),
         parse_mode='Markdown'
     )
 
 
-# Авторизация Яндекс.Диска (упрощенная)
+# Авторизация Яндекс.Диска
 @dp.callback_query_handler(lambda c: c.data == "auth_yandex")
 async def auth_yandex(callback: types.CallbackQuery):
+    auth_url = get_auth_url()
+    
     await bot.send_message(
         callback.from_user.id,
-        "🔑 **Авторизация Яндекс.Диска**\n\n"
-        "1️⃣ Перейдите по ссылке:\n"
-        f"`https://oauth.yandex.ru/authorize?response_type=code&client_id={CLIENT_ID}`\n\n"
-        "2️⃣ Войдите в аккаунт и разрешите доступ\n\n"
-        "3️⃣ Скопируйте код из адресной строки (часть после `code=`)\n\n"
-        "4️⃣ **Отправьте полученный код сюда** (просто текстом, без /code)\n\n"
-        "📝 Пример: `1234567890`",
+        f"🔑 **Авторизация Яндекс.Диска**\n\n"
+        f"1️⃣ Перейдите по ссылке:\n"
+        f"`{auth_url}`\n\n"
+        f"2️⃣ Войдите в аккаунт и разрешите доступ\n\n"
+        f"3️⃣ Скопируйте код из адресной строки (часть после `code=`)\n\n"
+        f"4️⃣ **Отправьте полученный код сюда** (просто текстом)\n\n"
+        f"📝 Пример: `1234567890`",
         parse_mode='Markdown'
     )
     await AuthStates.waiting_for_yandex_code.set()
@@ -451,6 +522,7 @@ async def auth_yandex(callback: types.CallbackQuery):
 @dp.message_handler(state=AuthStates.waiting_for_yandex_code)
 async def receive_code(message: types.Message, state: FSMContext):
     code = message.text.strip()
+    user_id = message.from_user.id
     
     if not code:
         await message.reply("❌ **Ошибка!** Отправьте код авторизации.", parse_mode='Markdown')
@@ -458,85 +530,93 @@ async def receive_code(message: types.Message, state: FSMContext):
     
     await message.reply("⏳ **Получение токена...**", parse_mode='Markdown')
     
-    token = await exchange_code_for_token(code)
+    token = await get_access_token(code)
     
     if token:
-        save_yandex_token(token)
+        save_user_token(user_id, token)
         
-        access, access_message = await check_yandex_access()
+        access, access_message = await check_yandex_access(user_id)
         
         if access:
             await message.reply(
-                "✅ **Авторизация успешна!**\n\n"
+                f"✅ **Авторизация успешна!**\n\n"
                 f"Статус: {access_message}\n"
-                "Теперь бэкапы будут сохраняться на Яндекс.Диск.",
+                f"Теперь бэкапы будут сохраняться на Яндекс.Диск.",
                 parse_mode='Markdown'
             )
         else:
             await message.reply(
                 f"⚠️ **Токен получен, но доступ ограничен!**\n\n"
                 f"Причина: {access_message}\n\n"
-                "Проверьте права доступа приложения.",
+                f"Проверьте права доступа приложения.",
                 parse_mode='Markdown'
             )
     else:
         await message.reply(
-            "❌ **Ошибка авторизации!**\n\n"
-            "Возможные причины:\n"
-            "- Неверный код\n"
-            "- Код уже использован\n"
-            "- Проблемы с соединением\n\n"
-            "Попробуйте снова нажав кнопку авторизации.",
+            f"❌ **Ошибка авторизации!**\n\n"
+            f"Возможные причины:\n"
+            f"- Неверный код\n"
+            f"- Код уже использован\n"
+            f"- Проблемы с соединением\n\n"
+            f"Попробуйте снова нажав кнопку авторизации.",
             parse_mode='Markdown'
         )
     
     await state.finish()
+    # Показываем главное меню
+    await cmd_start(message)
 
 
-# Добавление уведомления
+# Добавление уведомления (исправлено)
 @dp.message_handler(lambda m: m.text == "➕ Добавить уведомление")
 async def add_notification_start(message: types.Message, state: FSMContext):
+    await state.finish()  # Сбрасываем предыдущее состояние
     await message.reply("✏️ **Введите текст уведомления:**", parse_mode='Markdown')
-    await state.set_state(NotificationStates.waiting_for_text.state)
+    await NotificationStates.waiting_for_text.set()
 
 
 @dp.message_handler(state=NotificationStates.waiting_for_text)
 async def get_notification_text(message: types.Message, state: FSMContext):
+    if not message.text:
+        await message.reply("❌ **Ошибка!** Введите текст уведомления.", parse_mode='Markdown')
+        return
+    
     await state.update_data(text=message.text)
     
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
-        InlineKeyboardButton("⏰ В часах", callback_data="hours"),
-        InlineKeyboardButton("📅 В днях", callback_data="days"),
-        InlineKeyboardButton("📆 В месяцах", callback_data="months"),
-        InlineKeyboardButton("🗓️ Конкретная дата", callback_data="specific")
+        InlineKeyboardButton("⏰ В часах", callback_data="time_hours"),
+        InlineKeyboardButton("📅 В днях", callback_data="time_days"),
+        InlineKeyboardButton("📆 В месяцах", callback_data="time_months"),
+        InlineKeyboardButton("🗓️ Конкретная дата", callback_data="time_specific")
     )
     
     await message.reply("⏱️ **Через сколько уведомить?**", reply_markup=keyboard, parse_mode='Markdown')
-    await state.set_state("waiting_for_time_type")
+    await NotificationStates.waiting_for_time_type.set()
 
 
-@dp.callback_query_handler(lambda c: c.data in ['hours', 'days', 'months', 'specific'], state="waiting_for_time_type")
+@dp.callback_query_handler(lambda c: c.data.startswith('time_'), state=NotificationStates.waiting_for_time_type)
 async def get_time_type(callback: types.CallbackQuery, state: FSMContext):
-    await state.update_data(time_type=callback.data)
+    time_type = callback.data.replace('time_', '')
+    await state.update_data(time_type=time_type)
     
-    if callback.data == 'hours':
+    if time_type == 'hours':
         await bot.send_message(callback.from_user.id, "⌛ **Введите количество часов:**", parse_mode='Markdown')
-        await state.set_state(NotificationStates.waiting_for_hours.state)
-    elif callback.data == 'days':
+        await NotificationStates.waiting_for_hours.set()
+    elif time_type == 'days':
         await bot.send_message(callback.from_user.id, "📅 **Введите количество дней:**", parse_mode='Markdown')
-        await state.set_state(NotificationStates.waiting_for_days.state)
-    elif callback.data == 'months':
+        await NotificationStates.waiting_for_days.set()
+    elif time_type == 'months':
         await bot.send_message(callback.from_user.id, "📆 **Введите количество месяцев:**", parse_mode='Markdown')
-        await state.set_state(NotificationStates.waiting_for_months.state)
-    elif callback.data == 'specific':
+        await NotificationStates.waiting_for_months.set()
+    elif time_type == 'specific':
         await bot.send_message(callback.from_user.id, "🗓️ **Введите дату** (ГГГГ-ММ-ДД ЧЧ:ММ):\nПример: `2025-12-31 23:59`", parse_mode='Markdown')
-        await state.set_state(NotificationStates.waiting_for_specific_date.state)
+        await NotificationStates.waiting_for_specific_date.set()
     
     await callback.answer()
 
 
-async def save_notification_and_backup(message: types.Message, state: FSMContext, notify_time):
+async def save_notification(message: types.Message, state: FSMContext, notify_time: datetime):
     """Сохраняет уведомление и создает бэкап"""
     data = await state.get_data()
     notif_id = str(int(datetime.now().timestamp()))
@@ -558,13 +638,14 @@ async def save_notification_and_backup(message: types.Message, state: FSMContext
     )
     
     # Создаем бэкап
-    success, _ = await create_backup()
-    if success:
-        msg = await message.reply("✅ **Бэкап создан на Яндекс.Диске**")
-        await asyncio.sleep(60)
-        await msg.delete()
-    else:
-        await message.reply("⚠️ **Бэкап не создан** (нет доступа к Яндекс.Диску)")
+    if ADMIN_ID:
+        success, _ = await create_backup(ADMIN_ID)
+        if success:
+            msg = await message.reply("✅ **Бэкап создан на Яндекс.Диске**")
+            await asyncio.sleep(60)
+            await msg.delete()
+        else:
+            await message.reply("⚠️ **Бэкап не создан** (нет доступа к Яндекс.Диску)")
     
     await state.finish()
 
@@ -573,8 +654,11 @@ async def save_notification_and_backup(message: types.Message, state: FSMContext
 async def set_hours(message: types.Message, state: FSMContext):
     try:
         hours = int(message.text)
+        if hours <= 0:
+            await message.reply("❌ **Ошибка!** Введите положительное число часов.", parse_mode='Markdown')
+            return
         notify_time = datetime.now() + timedelta(hours=hours)
-        await save_notification_and_backup(message, state, notify_time)
+        await save_notification(message, state, notify_time)
     except ValueError:
         await message.reply("❌ **Ошибка!** Введите корректное число часов.", parse_mode='Markdown')
 
@@ -583,8 +667,11 @@ async def set_hours(message: types.Message, state: FSMContext):
 async def set_days(message: types.Message, state: FSMContext):
     try:
         days = int(message.text)
+        if days <= 0:
+            await message.reply("❌ **Ошибка!** Введите положительное число дней.", parse_mode='Markdown')
+            return
         notify_time = datetime.now() + timedelta(days=days)
-        await save_notification_and_backup(message, state, notify_time)
+        await save_notification(message, state, notify_time)
     except ValueError:
         await message.reply("❌ **Ошибка!** Введите корректное число дней.", parse_mode='Markdown')
 
@@ -593,9 +680,12 @@ async def set_days(message: types.Message, state: FSMContext):
 async def set_months(message: types.Message, state: FSMContext):
     try:
         months = int(message.text)
+        if months <= 0:
+            await message.reply("❌ **Ошибка!** Введите положительное число месяцев.", parse_mode='Markdown')
+            return
         days = months * 30
         notify_time = datetime.now() + timedelta(days=days)
-        await save_notification_and_backup(message, state, notify_time)
+        await save_notification(message, state, notify_time)
     except ValueError:
         await message.reply("❌ **Ошибка!** Введите корректное число месяцев.", parse_mode='Markdown')
 
@@ -605,11 +695,11 @@ async def set_specific_date(message: types.Message, state: FSMContext):
     try:
         notify_time = datetime.strptime(message.text, "%Y-%m-%d %H:%M")
         
-        if notify_time < datetime.now():
+        if notify_time <= datetime.now():
             await message.reply("❌ **Ошибка!** Дата должна быть в будущем!", parse_mode='Markdown')
             return
         
-        await save_notification_and_backup(message, state, notify_time)
+        await save_notification(message, state, notify_time)
     except ValueError:
         await message.reply("❌ **Ошибка!** Неверный формат даты!\nПример: `2025-12-31 23:59`", parse_mode='Markdown')
 
@@ -635,7 +725,7 @@ async def list_notifications(message: types.Message):
 
 
 # Удаление уведомления
-@dp.message_handler(lambda m: m.text.startswith('/delete_'))
+@dp.message_handler(lambda m: m.text and m.text.startswith('/delete_'))
 async def delete_notification(message: types.Message):
     notif_id = message.text.replace('/delete_', '')
     
@@ -645,20 +735,20 @@ async def delete_notification(message: types.Message):
         
         await message.reply("✅ **Уведомление удалено!**", parse_mode='Markdown')
         
-        # Создаем бэкап
-        success, _ = await create_backup()
-        if success:
-            msg = await message.reply("✅ **Бэкап создан на Яндекс.Диске**")
-            await asyncio.sleep(60)
-            await msg.delete()
-        else:
-            await message.reply("⚠️ **Бэкап не создан** (нет доступа к Яндекс.Диску)")
+        if ADMIN_ID:
+            success, _ = await create_backup(ADMIN_ID)
+            if success:
+                msg = await message.reply("✅ **Бэкап создан на Яндекс.Диске**")
+                await asyncio.sleep(60)
+                await msg.delete()
+            else:
+                await message.reply("⚠️ **Бэкап не создан** (нет доступа к Яндекс.Диску)")
     else:
         await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
 
 
 # Обработка кнопок уведомлений
-@dp.callback_query_handler(lambda c: c.data.startswith('delete_'))
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('delete_'))
 async def handle_delete_notification(callback: types.CallbackQuery):
     notif_id = callback.data.replace('delete_', '')
     
@@ -673,21 +763,25 @@ async def handle_delete_notification(callback: types.CallbackQuery):
             parse_mode='Markdown'
         )
         
-        # Создаем бэкап
-        success, _ = await create_backup()
-        if success:
-            msg = await bot.send_message(callback.from_user.id, "✅ **Бэкап создан**")
-            await asyncio.sleep(60)
-            await msg.delete()
+        if ADMIN_ID:
+            success, _ = await create_backup(ADMIN_ID)
+            if success:
+                msg = await bot.send_message(callback.from_user.id, "✅ **Бэкап создан**")
+                await asyncio.sleep(60)
+                await msg.delete()
     else:
         await callback.answer("Уведомление уже удалено")
     
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith('snooze_'))
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('snooze_'))
 async def handle_snooze(callback: types.CallbackQuery):
     parts = callback.data.split('_')
+    if len(parts) < 3:
+        await callback.answer("Ошибка")
+        return
+    
     notif_id = parts[1]
     hours = int(parts[2])
     
@@ -769,10 +863,13 @@ async def save_backup_path(message: types.Message, state: FSMContext):
     config['backup_path'] = message.text
     save_data()
     
-    if yandex_disk:
-        access, _ = await check_yandex_access()
-        if access:
-            yandex_disk.create_folder(config['backup_path'])
+    if ADMIN_ID:
+        token = get_user_token(ADMIN_ID)
+        if token:
+            yandex_disk = YandexDiskAPI(token)
+            access, _ = await check_yandex_access(ADMIN_ID)
+            if access:
+                yandex_disk.create_folder(config['backup_path'])
     
     await message.reply(f"✅ **Путь сохранен:** `{config['backup_path']}`", parse_mode='Markdown')
     await state.finish()
@@ -833,10 +930,16 @@ async def save_check_time(message: types.Message, state: FSMContext):
 
 @dp.callback_query_handler(lambda c: c.data == "info")
 async def show_info(callback: types.CallbackQuery):
-    access, access_message = await check_yandex_access() if yandex_token else (False, "Не авторизован")
+    access = False
+    access_message = "Не авторизован"
+    
+    if ADMIN_ID:
+        access, access_message = await check_yandex_access(ADMIN_ID)
     
     info = f"""
 📊 **СТАТИСТИКА БОТА**
+
+🤖 **Версия:** v{BOT_VERSION} ({BOT_VERSION_DATE})
 
 📝 **Активных уведомлений:** `{len(notifications)}`
 💾 **Максимум бэкапов:** `{config.get('max_backups', 5)}`
@@ -855,8 +958,12 @@ async def show_info(callback: types.CallbackQuery):
 # Создание бэкапа вручную
 @dp.message_handler(lambda m: m.text == "💾 Создать бэкап")
 async def manual_backup(message: types.Message):
+    if not ADMIN_ID:
+        await message.reply("❌ Ошибка: ADMIN_ID не задан", parse_mode='Markdown')
+        return
+    
     await message.reply("⏳ **Создание бэкапа...**", parse_mode='Markdown')
-    success, backup_file = await create_backup()
+    success, backup_file = await create_backup(ADMIN_ID)
     if success:
         msg = await message.reply("✅ **Бэкап создан на Яндекс.Диске**")
         await asyncio.sleep(60)
@@ -868,10 +975,21 @@ async def manual_backup(message: types.Message):
 # Команда /restart
 @dp.message_handler(commands=['restart'])
 async def restart_bot(message: types.Message):
-    if message.from_user.id == ADMIN_ID:
+    if ADMIN_ID and message.from_user.id == ADMIN_ID:
         await message.reply("🔄 **Перезапуск бота...**", parse_mode='Markdown')
         await asyncio.sleep(2)
         os._exit(0)
+
+
+# Команда /version
+@dp.message_handler(commands=['version'])
+async def show_version(message: types.Message):
+    await message.reply(
+        f"🤖 **Бот для уведомлений**\n"
+        f"📌 **Версия:** v{BOT_VERSION}\n"
+        f"📅 **Дата:** {BOT_VERSION_DATE}",
+        parse_mode='Markdown'
+    )
 
 
 # Запуск бота
@@ -879,20 +997,26 @@ async def on_startup(dp):
     init_folders()
     load_data()
     
-    if yandex_token:
-        access, message = await check_yandex_access()
+    print(f"\n{'='*50}")
+    print(f"🤖 БОТ ДЛЯ УВЕДОМЛЕНИЙ v{BOT_VERSION} ({BOT_VERSION_DATE})")
+    print(f"{'='*50}")
+    
+    if ADMIN_ID and get_user_token(ADMIN_ID):
+        access, message = await check_yandex_access(ADMIN_ID)
         if access:
             print("✅ Доступ к Яндекс.Диску получен")
         else:
             print(f"⚠️ Токен есть, но доступ ограничен: {message}")
     else:
-        print("❌ Нет токена Яндекс.Диска")
+        print("❌ Нет токена Яндекс.Диска (требуется авторизация)")
+    
+    print(f"📝 Загружено уведомлений: {len(notifications)}")
+    print(f"🔔 Уведомления: {'Включены' if notifications_enabled else 'Выключены'}")
+    print(f"{'='*50}\n")
     
     asyncio.create_task(check_notifications())
     asyncio.create_task(daily_check())
     print("✅ Бот успешно запущен!")
-    print(f"📝 Загружено уведомлений: {len(notifications)}")
-    print(f"🔔 Уведомления: {'Включены' if notifications_enabled else 'Выключены'}")
 
 
 if __name__ == '__main__':
