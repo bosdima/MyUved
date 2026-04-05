@@ -43,14 +43,13 @@ dp.middleware.setup(LoggingMiddleware())
 # Файлы для хранения данных
 DATA_FILE = 'notifications.json'
 CONFIG_FILE = 'config.json'
-TOKEN_FILE = 'user_tokens.json'  # Изменено для поддержки нескольких пользователей
+TOKEN_FILE = 'user_tokens.json'
 BACKUP_DIR = 'backups'
 
 # Глобальные переменные
 notifications: Dict = {}
 config: Dict = {}
-user_tokens: Dict[int, str] = {}  # user_id -> token
-yandex_disk_cache: Dict[int, Any] = {}  # Кэш для API
+user_tokens: Dict[int, str] = {}
 notifications_enabled = True
 
 # URL для Яндекс.Диск API
@@ -93,7 +92,7 @@ async def get_access_token(auth_code: str) -> Optional[str]:
             return None
 
 
-# Класс для работы с Яндекс.Диском через API (обновлен)
+# Класс для работы с Яндекс.Диском через API
 class YandexDiskAPI:
     def __init__(self, token):
         self.token = token
@@ -103,8 +102,43 @@ class YandexDiskAPI:
             "Content-Type": "application/json"
         }
     
+    async def check_access_async(self):
+        """Асинхронная проверка доступа к Яндекс.Диску"""
+        try:
+            url = f"{self.base_url}/"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers) as response:
+                    if response.status != 200:
+                        return False, "Нет доступа к диску"
+            
+            # Проверяем права на запись - создаем тестовый файл
+            test_file_content = f"Test file created at {datetime.now().isoformat()}"
+            test_file_name = f"_test_write_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            test_path = f"/{test_file_name}"
+            
+            # Загружаем тестовый файл
+            upload_success = await self.upload_file_content(test_path, test_file_content)
+            
+            if upload_success:
+                # Проверяем, что файл существует
+                file_exists = await self.check_file_exists(test_path)
+                
+                # Удаляем тестовый файл
+                await self.delete_file_async(test_path)
+                
+                if file_exists:
+                    return True, "Есть права на запись (тестовая запись успешна)"
+                else:
+                    return False, "Файл создан, но не найден при проверке"
+            else:
+                return False, "Нет прав на запись (не удалось создать тестовый файл)"
+                
+        except Exception as e:
+            print(f"Ошибка проверки доступа: {e}")
+            return False, str(e)
+    
     def check_access(self):
-        """Проверяет доступ к Яндекс.Диску и права на запись"""
+        """Синхронная проверка доступа (для совместимости)"""
         try:
             url = f"{self.base_url}/"
             response = requests.get(url, headers=self.headers, timeout=10)
@@ -125,6 +159,56 @@ class YandexDiskAPI:
         except Exception as e:
             print(f"Ошибка проверки доступа: {e}")
             return False, str(e)
+    
+    async def upload_file_content(self, remote_path: str, content: str) -> bool:
+        """Загружает текстовое содержимое как файл на Яндекс.Диск"""
+        try:
+            # Получаем ссылку для загрузки
+            url = f"{self.base_url}/resources/upload"
+            params = {"path": remote_path, "overwrite": True}
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers, params=params) as response:
+                    if response.status != 200:
+                        return False
+                    data = await response.json()
+                    upload_url = data.get("href")
+                    
+                    if not upload_url:
+                        return False
+                    
+                    # Загружаем содержимое
+                    async with session.put(upload_url, data=content.encode('utf-8'), headers={"Content-Type": "text/plain"}) as upload_response:
+                        return upload_response.status in [200, 201]
+        except Exception as e:
+            print(f"Ошибка загрузки файла: {e}")
+            return False
+    
+    async def check_file_exists(self, remote_path: str) -> bool:
+        """Проверяет существование файла на Яндекс.Диске"""
+        try:
+            url = f"{self.base_url}/resources"
+            params = {"path": remote_path}
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers, params=params) as response:
+                    return response.status == 200
+        except Exception as e:
+            print(f"Ошибка проверки файла: {e}")
+            return False
+    
+    async def delete_file_async(self, remote_path: str) -> bool:
+        """Удаляет файл на Яндекс.Диске (асинхронно)"""
+        try:
+            url = f"{self.base_url}/resources"
+            params = {"path": remote_path, "permanently": True}
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.delete(url, headers=self.headers, params=params) as response:
+                    return response.status in [200, 202, 204]
+        except Exception as e:
+            print(f"Ошибка удаления файла: {e}")
+            return False
     
     def create_folder(self, folder_path):
         """Создает папку на Яндекс.Диске"""
@@ -200,7 +284,7 @@ class YandexDiskAPI:
             return False
 
 
-# Состояния FSM (исправлены)
+# Состояния FSM
 class AuthStates(StatesGroup):
     waiting_for_yandex_code = State()
 
@@ -250,7 +334,6 @@ def load_data():
         try:
             with open(TOKEN_FILE, 'r') as f:
                 token_data = json.load(f)
-                # Конвертируем ключи из строк в int
                 user_tokens = {int(k): v for k, v in token_data.items()}
         except:
             user_tokens = {}
@@ -267,7 +350,6 @@ def save_user_token(user_id: int, token: str):
     """Сохраняет токен пользователя"""
     global user_tokens
     user_tokens[user_id] = token
-    # Сохраняем все токены
     with open(TOKEN_FILE, 'w') as f:
         json.dump({str(k): v for k, v in user_tokens.items()}, f, indent=2)
 
@@ -285,28 +367,38 @@ def delete_user_token(user_id: int):
             json.dump({str(k): v for k, v in user_tokens.items()}, f, indent=2)
 
 
-# Проверка доступа к Яндекс.Диску для пользователя
-async def check_yandex_access(user_id: int) -> tuple:
+# Проверка доступа к Яндекс.Диску с тестовой записью
+async def check_yandex_access_with_test(user_id: int) -> tuple:
+    """Проверяет доступ к Яндекс.Диску и выполняет тестовую запись файла"""
     token = get_user_token(user_id)
     
     if not token:
-        return False, "Нет токена авторизации"
+        return False, "❌ Нет токена авторизации", None
     
     try:
         yandex_disk = YandexDiskAPI(token)
-        access, message = yandex_disk.check_access()
+        
+        # Полная проверка с тестовой записью
+        access, message = await yandex_disk.check_access_async()
         
         if access:
             # Создаем папку для бэкапов если её нет
             yandex_disk.create_folder(config['backup_path'])
             print(f"✅ Доступ к Яндекс.Диску для user {user_id} успешно получен")
+            return True, f"✅ {message}", yandex_disk
         else:
             print(f"❌ Нет доступа к Яндекс.Диску для user {user_id}: {message}")
-        
-        return access, message
+            return False, f"❌ {message}", None
+            
     except Exception as e:
         print(f"Ошибка доступа к Яндекс.Диску: {e}")
-        return False, str(e)
+        return False, f"❌ Ошибка: {str(e)}", None
+
+
+async def check_yandex_access(user_id: int) -> tuple:
+    """Упрощенная проверка доступа (для совместимости)"""
+    result, message, _ = await check_yandex_access_with_test(user_id)
+    return result, message
 
 
 # Создание бэкапа
@@ -324,7 +416,6 @@ async def create_backup(user_id: int = None, show_message=True) -> tuple:
         with open(backup_file, 'w', encoding='utf-8') as f:
             json.dump(backup_data, f, indent=2, ensure_ascii=False)
         
-        # Если есть пользователь с токеном, загружаем на его диск
         if user_id:
             token = get_user_token(user_id)
             if token:
@@ -421,7 +512,6 @@ async def daily_check():
         if now >= target_time and not checking_daily:
             checking_daily = True
             
-            # Проверяем доступ для администратора
             if ADMIN_ID:
                 access, message = await check_yandex_access(ADMIN_ID)
                 if not access:
@@ -469,7 +559,10 @@ async def cmd_start(message: types.Message):
             )
         else:
             keyboard = InlineKeyboardMarkup()
-            keyboard.add(InlineKeyboardButton("🔑 Авторизовать Яндекс.Диск", callback_data="auth_yandex"))
+            # Делаем ссылку активной через Inline кнопку с URL
+            auth_url = get_auth_url()
+            keyboard.add(InlineKeyboardButton("🔑 Нажмите для авторизации", url=auth_url))
+            keyboard.add(InlineKeyboardButton("✅ Я получил код", callback_data="enter_code"))
             
             await message.reply(
                 f"⚠️ **Нет доступа к Яндекс.Диску!**\n\n"
@@ -481,13 +574,21 @@ async def cmd_start(message: types.Message):
             )
     else:
         keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("🔑 Авторизовать Яндекс.Диск", callback_data="auth_yandex"))
+        auth_url = get_auth_url()
+        keyboard.add(InlineKeyboardButton("🔑 Нажмите для авторизации", url=auth_url))
+        keyboard.add(InlineKeyboardButton("✅ Я получил код", callback_data="enter_code"))
         
         await message.reply(
             f"👋 **Добро пожаловать!**\n\n"
             f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE})\n\n"
             f"⚠️ **Нет доступа к Яндекс.Диску!**\n\n"
-            f"Для работы бэкапов необходимо авторизоваться.",
+            f"Для работы бэкапов необходимо авторизоваться.\n\n"
+            f"**Как авторизоваться:**\n"
+            f"1️⃣ Нажмите на кнопку ниже\n"
+            f"2️⃣ Войдите в аккаунт Яндекс\n"
+            f"3️⃣ Разрешите доступ\n"
+            f"4️⃣ Скопируйте код из адресной строки\n"
+            f"5️⃣ Нажмите «Я получил код» и отправьте его",
             reply_markup=keyboard,
             parse_mode='Markdown'
         )
@@ -499,23 +600,38 @@ async def cmd_start(message: types.Message):
     )
 
 
-# Авторизация Яндекс.Диска
-@dp.callback_query_handler(lambda c: c.data == "auth_yandex")
-async def auth_yandex(callback: types.CallbackQuery):
-    auth_url = get_auth_url()
-    
+@dp.callback_query_handler(lambda c: c.data == "enter_code")
+async def ask_for_code(callback: types.CallbackQuery):
     await bot.send_message(
         callback.from_user.id,
-        f"🔑 **Авторизация Яндекс.Диска**\n\n"
-        f"1️⃣ Перейдите по ссылке:\n"
-        f"`{auth_url}`\n\n"
-        f"2️⃣ Войдите в аккаунт и разрешите доступ\n\n"
-        f"3️⃣ Скопируйте код из адресной строки (часть после `code=`)\n\n"
-        f"4️⃣ **Отправьте полученный код сюда** (просто текстом)\n\n"
+        f"🔑 **Введите код авторизации**\n\n"
+        f"Отправьте код, который вы получили после авторизации:\n"
         f"📝 Пример: `1234567890`",
         parse_mode='Markdown'
     )
     await AuthStates.waiting_for_yandex_code.set()
+    await callback.answer()
+
+
+# Авторизация Яндекс.Диска (улучшенная)
+@dp.callback_query_handler(lambda c: c.data == "auth_yandex")
+async def auth_yandex(callback: types.CallbackQuery):
+    auth_url = get_auth_url()
+    
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("🔑 Перейти к авторизации", url=auth_url))
+    keyboard.add(InlineKeyboardButton("✅ Я получил код", callback_data="enter_code"))
+    
+    await bot.send_message(
+        callback.from_user.id,
+        f"🔑 **Авторизация Яндекс.Диска**\n\n"
+        f"1️⃣ Нажмите на кнопку ниже\n"
+        f"2️⃣ Войдите в аккаунт и разрешите доступ\n"
+        f"3️⃣ Скопируйте код из адресной строки (часть после `code=`)\n"
+        f"4️⃣ Нажмите «Я получил код» и отправьте его",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
     await callback.answer()
 
 
@@ -528,49 +644,102 @@ async def receive_code(message: types.Message, state: FSMContext):
         await message.reply("❌ **Ошибка!** Отправьте код авторизации.", parse_mode='Markdown')
         return
     
-    await message.reply("⏳ **Получение токена...**", parse_mode='Markdown')
+    status_msg = await message.reply("⏳ **Получение токена...**", parse_mode='Markdown')
     
     token = await get_access_token(code)
     
     if token:
         save_user_token(user_id, token)
         
-        access, access_message = await check_yandex_access(user_id)
+        # Обновляем статус
+        await status_msg.edit_text("⏳ **Проверка доступа к Яндекс.Диску...**")
+        
+        # Полная проверка с тестовой записью
+        access, access_message, yandex_disk = await check_yandex_access_with_test(user_id)
         
         if access:
-            await message.reply(
-                f"✅ **Авторизация успешна!**\n\n"
-                f"Статус: {access_message}\n"
-                f"Теперь бэкапы будут сохраняться на Яндекс.Диск.",
-                parse_mode='Markdown'
-            )
+            # Создаем папку для бэкапов
+            yandex_disk.create_folder(config['backup_path'])
+            
+            # Дополнительная проверка - создание реального тестового файла
+            await status_msg.edit_text("⏳ **Выполняется тестовая запись файла...**")
+            
+            test_file_path = f"/_test_auth_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            test_content = f"Тестовый файл для проверки прав доступа\nСоздан: {datetime.now().isoformat()}\nПользователь: {user_id}"
+            
+            # Пытаемся записать тестовый файл
+            upload_success = await yandex_disk.upload_file_content(test_file_path, test_content)
+            
+            if upload_success:
+                # Проверяем, что файл существует
+                file_exists = await yandex_disk.check_file_exists(test_file_path)
+                
+                if file_exists:
+                    # Читаем содержимое для проверки
+                    await status_msg.edit_text("⏳ **Тестовая запись успешна! Завершаем проверку...**")
+                    
+                    # Удаляем тестовый файл
+                    await yandex_disk.delete_file_async(test_file_path)
+                    
+                    result_message = (
+                        f"✅ **Авторизация успешна!**\n\n"
+                        f"📊 **Результаты проверки:**\n"
+                        f"✅ Доступ к диску: есть\n"
+                        f"✅ Права на запись: есть\n"
+                        f"✅ Тестовая запись файла: успешна\n"
+                        f"✅ Тестовое чтение файла: успешно\n"
+                        f"✅ Тестовое удаление файла: успешно\n\n"
+                        f"📁 **Папка для бэкапов:** `{config['backup_path']}`\n\n"
+                        f"🎉 **Все функции бота будут работать корректно!**"
+                    )
+                else:
+                    result_message = (
+                        f"⚠️ **Авторизация частично успешна**\n\n"
+                        f"📊 **Результаты проверки:**\n"
+                        f"✅ Доступ к диску: есть\n"
+                        f"✅ Права на запись: есть\n"
+                        f"❌ Проверка файла: файл не найден\n\n"
+                        f"⚠️ Возможны проблемы с синхронизацией."
+                    )
+            else:
+                result_message = (
+                    f"⚠️ **Авторизация частично успешна**\n\n"
+                    f"📊 **Результаты проверки:**\n"
+                    f"✅ Доступ к диску: есть\n"
+                    f"❌ Права на запись: не подтверждены\n\n"
+                    f"⚠️ Бэкапы могут не создаваться! Проверьте настройки приложения."
+                )
         else:
-            await message.reply(
+            result_message = (
                 f"⚠️ **Токен получен, но доступ ограничен!**\n\n"
-                f"Причина: {access_message}\n\n"
-                f"Проверьте права доступа приложения.",
-                parse_mode='Markdown'
+                f"📊 **Результаты проверки:**\n"
+                f"❌ {access_message}\n\n"
+                f"⚠️ Проверьте права доступа приложения в настройках Яндекс ID."
             )
+        
+        await status_msg.delete()
+        await message.reply(result_message, parse_mode='Markdown')
+        
+        # Показываем главное меню
+        await cmd_start(message)
     else:
-        await message.reply(
+        await status_msg.edit_text(
             f"❌ **Ошибка авторизации!**\n\n"
             f"Возможные причины:\n"
             f"- Неверный код\n"
             f"- Код уже использован\n"
             f"- Проблемы с соединением\n\n"
-            f"Попробуйте снова нажав кнопку авторизации.",
+            f"Попробуйте снова через /start",
             parse_mode='Markdown'
         )
     
     await state.finish()
-    # Показываем главное меню
-    await cmd_start(message)
 
 
-# Добавление уведомления (исправлено)
+# Добавление уведомления
 @dp.message_handler(lambda m: m.text == "➕ Добавить уведомление")
 async def add_notification_start(message: types.Message, state: FSMContext):
-    await state.finish()  # Сбрасываем предыдущее состояние
+    await state.finish()
     await message.reply("✏️ **Введите текст уведомления:**", parse_mode='Markdown')
     await NotificationStates.waiting_for_text.set()
 
@@ -637,7 +806,6 @@ async def save_notification(message: types.Message, state: FSMContext, notify_ti
         parse_mode='Markdown'
     )
     
-    # Создаем бэкап
     if ADMIN_ID:
         success, _ = await create_backup(ADMIN_ID)
         if success:
@@ -841,7 +1009,6 @@ async def toggle_notifications(callback: types.CallbackQuery):
         parse_mode='Markdown'
     )
     
-    # Обновляем меню настроек
     await settings_menu(callback.message)
     await callback.answer()
 
