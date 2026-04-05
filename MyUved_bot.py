@@ -127,15 +127,17 @@ class YandexDiskAPI:
             test_folder = f"/test_folder_{int(datetime.now().timestamp())}"
             create_url = f"{self.base_url}/resources"
             
+            # ВАЖНО: params должен быть словарем со строковыми значениями
+            params = {"path": test_folder}
+            
             async with aiohttp.ClientSession() as session:
                 # Создаем папку
-                async with session.put(create_url, headers=self.headers, params={"path": test_folder}) as response:
+                async with session.put(create_url, headers=self.headers, params=params) as response:
                     if response.status in [200, 201, 202]:
-                        # Папка создана успешно - удаляем её
-                        async with session.delete(create_url, headers=self.headers, params={"path": test_folder, "permanently": True}) as del_response:
+                        # Папка создана - удаляем её
+                        async with session.delete(create_url, headers=self.headers, params=params) as del_response:
                             return True, "Есть права на запись! Тестовая папка создана и удалена."
                     else:
-                        error_text = await response.text()
                         return False, f"Нет прав на запись (код: {response.status})"
                         
         except Exception as e:
@@ -169,7 +171,7 @@ class YandexDiskAPI:
         """Загружает текстовое содержимое как файл на Яндекс.Диск"""
         try:
             url = f"{self.base_url}/resources/upload"
-            params = {"path": remote_path, "overwrite": True}
+            params = {"path": remote_path, "overwrite": "true"}  # строка, а не bool
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=self.headers, params=params) as response:
@@ -204,7 +206,7 @@ class YandexDiskAPI:
         """Удаляет файл или папку на Яндекс.Диске"""
         try:
             url = f"{self.base_url}/resources"
-            params = {"path": remote_path, "permanently": True}
+            params = {"path": remote_path, "permanently": "true"}  # строка, а не bool
             
             async with aiohttp.ClientSession() as session:
                 async with session.delete(url, headers=self.headers, params=params) as response:
@@ -228,7 +230,7 @@ class YandexDiskAPI:
         """Загружает файл на Яндекс.Диск"""
         try:
             url = f"{self.base_url}/resources/upload"
-            params = {"path": remote_path, "overwrite": True}
+            params = {"path": remote_path, "overwrite": "true"}
             response = requests.get(url, headers=self.headers, params=params, timeout=10)
             
             if response.status_code == 200:
@@ -260,7 +262,7 @@ class YandexDiskAPI:
         """Удаляет файл на Яндекс.Диске"""
         try:
             url = f"{self.base_url}/resources"
-            params = {"path": remote_path, "permanently": True}
+            params = {"path": remote_path, "permanently": "true"}
             response = requests.delete(url, headers=self.headers, params=params, timeout=10)
             return response.status_code in [200, 202, 204]
         except Exception as e:
