@@ -606,7 +606,7 @@ async def ask_for_code(callback: types.CallbackQuery):
         callback.from_user.id,
         f"🔑 **Введите код авторизации**\n\n"
         f"Отправьте код, который вы получили после авторизации:\n"
-        f"📝 Пример: `1234567890`",
+        f"📝 Пример: `5j4iyexor5ltn4ym`",
         parse_mode='Markdown'
     )
     await AuthStates.waiting_for_yandex_code.set()
