@@ -18,7 +18,7 @@ from aiogram.utils import executor
 from dotenv import load_dotenv
 
 # Версия бота
-BOT_VERSION = "2.0"
+BOT_VERSION = "2.1"
 BOT_VERSION_DATE = "05.04.2026"
 
 # Загрузка переменных окружения
@@ -559,7 +559,6 @@ async def cmd_start(message: types.Message):
             )
         else:
             keyboard = InlineKeyboardMarkup()
-            # Делаем ссылку активной через Inline кнопку с URL
             auth_url = get_auth_url()
             keyboard.add(InlineKeyboardButton("🔑 Нажмите для авторизации", url=auth_url))
             keyboard.add(InlineKeyboardButton("✅ Я получил код", callback_data="enter_code"))
@@ -613,7 +612,7 @@ async def ask_for_code(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# Авторизация Яндекс.Диска (улучшенная)
+# Авторизация Яндекс.Диска
 @dp.callback_query_handler(lambda c: c.data == "auth_yandex")
 async def auth_yandex(callback: types.CallbackQuery):
     auth_url = get_auth_url()
@@ -720,7 +719,7 @@ async def receive_code(message: types.Message, state: FSMContext):
         await status_msg.delete()
         await message.reply(result_message, parse_mode='Markdown')
         
-        # Показываем главное меню
+        # Показываем главное меню с обновленным статусом
         await cmd_start(message)
     else:
         await status_msg.edit_text(
@@ -810,7 +809,7 @@ async def save_notification(message: types.Message, state: FSMContext, notify_ti
         success, _ = await create_backup(ADMIN_ID)
         if success:
             msg = await message.reply("✅ **Бэкап создан на Яндекс.Диске**")
-            await asyncio.sleep(60)
+            await asyncio.sleep(3)
             await msg.delete()
         else:
             await message.reply("⚠️ **Бэкап не создан** (нет доступа к Яндекс.Диску)")
@@ -907,7 +906,7 @@ async def delete_notification(message: types.Message):
             success, _ = await create_backup(ADMIN_ID)
             if success:
                 msg = await message.reply("✅ **Бэкап создан на Яндекс.Диске**")
-                await asyncio.sleep(60)
+                await asyncio.sleep(3)
                 await msg.delete()
             else:
                 await message.reply("⚠️ **Бэкап не создан** (нет доступа к Яндекс.Диску)")
@@ -935,7 +934,7 @@ async def handle_delete_notification(callback: types.CallbackQuery):
             success, _ = await create_backup(ADMIN_ID)
             if success:
                 msg = await bot.send_message(callback.from_user.id, "✅ **Бэкап создан**")
-                await asyncio.sleep(60)
+                await asyncio.sleep(3)
                 await msg.delete()
     else:
         await callback.answer("Уведомление уже удалено")
@@ -1133,7 +1132,7 @@ async def manual_backup(message: types.Message):
     success, backup_file = await create_backup(ADMIN_ID)
     if success:
         msg = await message.reply("✅ **Бэкап создан на Яндекс.Диске**")
-        await asyncio.sleep(60)
+        await asyncio.sleep(3)
         await msg.delete()
     else:
         await message.reply("⚠️ **Бэкап не создан!**\nПроверьте доступ к Яндекс.Диску в настройках.", parse_mode='Markdown')
@@ -1157,6 +1156,18 @@ async def show_version(message: types.Message):
         f"📅 **Дата:** {BOT_VERSION_DATE}",
         parse_mode='Markdown'
     )
+
+
+# Команда /cancel для отмены операций
+@dp.message_handler(commands=['cancel'], state='*')
+async def cancel_operation(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is None:
+        return
+    
+    await state.finish()
+    await message.reply("✅ **Операция отменена!**", parse_mode='Markdown')
+    await cmd_start(message)
 
 
 # Запуск бота
