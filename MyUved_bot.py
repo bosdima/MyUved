@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlencode
+from io import BytesIO
 
 import aiohttp
 import requests
@@ -14,7 +15,7 @@ from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputFile
 from aiogram.utils import executor
 from dotenv import load_dotenv
 
@@ -294,7 +295,7 @@ class YandexDiskAPI:
 # Состояния FSM
 class AuthStates(StatesGroup):
     waiting_for_yandex_code = State()
-    waiting_for_direct_token = State()  # Для прямого ввода токена
+    waiting_for_direct_token = State()
 
 
 class NotificationStates(StatesGroup):
@@ -304,12 +305,16 @@ class NotificationStates(StatesGroup):
     waiting_for_days = State()
     waiting_for_months = State()
     waiting_for_specific_date = State()
+    waiting_for_edit_notification = State()
+    waiting_for_edit_text = State()
+    waiting_for_edit_time = State()
 
 
 class SettingsStates(StatesGroup):
     waiting_for_backup_path = State()
     waiting_for_max_backups = State()
     waiting_for_check_time = State()
+    waiting_for_upload_backup = State()
 
 
 # Инициализация папок
@@ -409,6 +414,23 @@ async def check_yandex_access(user_id: int) -> tuple:
     return result, message
 
 
+# Отправка бэкапа в Telegram
+async def send_backup_to_telegram(backup_file: Path) -> bool:
+    """Отправляет файл бэкапа в Telegram"""
+    try:
+        with open(backup_file, 'rb') as f:
+            await bot.send_document(
+                ADMIN_ID,
+                InputFile(BytesIO(f.read()), filename=backup_file.name),
+                caption=f"📦 **Бэкап от {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}**\n\n💡 Сохраните этот файл для восстановления",
+                parse_mode='Markdown'
+            )
+        return True
+    except Exception as e:
+        print(f"Ошибка отправки бэкапа в Telegram: {e}")
+        return False
+
+
 # Создание бэкапа
 async def create_backup(user_id: int = None, show_message=True) -> tuple:
     try:
@@ -418,11 +440,15 @@ async def create_backup(user_id: int = None, show_message=True) -> tuple:
         backup_data = {
             'notifications': notifications,
             'config': config,
-            'timestamp': timestamp
+            'timestamp': timestamp,
+            'version': BOT_VERSION
         }
         
         with open(backup_file, 'w', encoding='utf-8') as f:
             json.dump(backup_data, f, indent=2, ensure_ascii=False)
+        
+        backup_created = False
+        backup_location = None
         
         if user_id:
             token = get_user_token(user_id)
@@ -435,18 +461,46 @@ async def create_backup(user_id: int = None, show_message=True) -> tuple:
                     
                     if yandex_disk.upload_file(str(backup_file), remote_path):
                         await cleanup_old_backups(user_id)
-                        print(f"✅ Бэкап успешно создан: {backup_file}")
-                        return True, backup_file
+                        print(f"✅ Бэкап успешно создан на Яндекс.Диске: {backup_file}")
+                        backup_created = True
+                        backup_location = "Яндекс.Диск"
                     else:
                         print("❌ Ошибка загрузки на Яндекс.Диск")
-                        return False, None
                 else:
                     print("❌ Яндекс.Диск не доступен")
-                    return False, None
-        return False, None
+        
+        # Если не удалось создать бэкап на Яндекс.Диске, отправляем в Telegram
+        if not backup_created:
+            print("📤 Отправка бэкапа в Telegram...")
+            if await send_backup_to_telegram(backup_file):
+                backup_created = True
+                backup_location = "Telegram"
+                print("✅ Бэкап отправлен в Telegram")
+            else:
+                print("❌ Не удалось отправить бэкап в Telegram")
+        
+        return backup_created, backup_file, backup_location
     except Exception as e:
         print(f"Ошибка создания бэкапа: {e}")
-        return False, None
+        return False, None, None
+
+
+# Восстановление из бэкапа
+async def restore_from_backup(backup_data: dict) -> bool:
+    """Восстанавливает данные из бэкапа"""
+    try:
+        global notifications, config
+        
+        if 'notifications' in backup_data:
+            notifications = backup_data['notifications']
+        if 'config' in backup_data:
+            config = backup_data['config']
+        
+        save_data()
+        return True
+    except Exception as e:
+        print(f"Ошибка восстановления из бэкапа: {e}")
+        return False
 
 
 async def cleanup_old_backups(user_id: int = None):
@@ -840,32 +894,37 @@ async def get_time_type(callback: types.CallbackQuery, state: FSMContext):
 async def save_notification(message: types.Message, state: FSMContext, notify_time: datetime):
     """Сохраняет уведомление и создает бэкап"""
     data = await state.get_data()
-    notif_id = str(int(datetime.now().timestamp()))
+    
+    # Находим следующий номер уведомления
+    next_num = len(notifications) + 1
+    notif_id = str(next_num)
     
     notifications[notif_id] = {
         'text': data['text'],
         'time': notify_time.isoformat(),
         'created': datetime.now().isoformat(),
-        'notified': False
+        'notified': False,
+        'num': next_num
     }
     
     save_data()
     
     await message.reply(
-        f"✅ **Уведомление создано!**\n"
+        f"✅ **Уведомление #{next_num} создано!**\n"
         f"📝 {data['text']}\n"
-        f"⏰ {notify_time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"⏰ {notify_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"📅 Сработает: {notify_time.strftime('%d.%m.%Y в %H:%M')}",
         parse_mode='Markdown'
     )
     
     if ADMIN_ID:
-        success, _ = await create_backup(ADMIN_ID)
+        success, _, location = await create_backup(ADMIN_ID)
         if success:
-            msg = await message.reply("✅ **Бэкап создан на Яндекс.Диске**")
+            msg = await message.reply(f"✅ **Бэкап создан** ({location})")
             await asyncio.sleep(3)
             await msg.delete()
         else:
-            await message.reply("⚠️ **Бэкап не создан** (нет доступа к Яндекс.Диску)")
+            await message.reply("⚠️ **Бэкап не создан**")
     
     await state.finish()
 
@@ -924,69 +983,320 @@ async def set_specific_date(message: types.Message, state: FSMContext):
         await message.reply("❌ **Ошибка!** Неверный формат даты!\nПример: `2025-12-31 23:59`", parse_mode='Markdown')
 
 
-# Список уведомлений
+# Список уведомлений с кнопками
 @dp.message_handler(lambda m: m.text == "📋 Список уведомлений")
 async def list_notifications(message: types.Message):
     if not notifications:
         await message.reply("📭 **У вас нет активных уведомлений**", parse_mode='Markdown')
         return
     
-    text = "📋 **ВАШИ УВЕДОМЛЕНИЯ:**\n\n"
-    for notif_id, notif in list(notifications.items())[:20]:
+    # Сортируем уведомления по времени
+    sorted_notifs = sorted(notifications.items(), key=lambda x: datetime.fromisoformat(x[1]['time']))
+    
+    for notif_id, notif in sorted_notifs:
         notify_time = datetime.fromisoformat(notif['time'])
-        status = "✅" if notif.get('notified') else "⏳"
-        text += f"{status} `{notify_time.strftime('%d.%m.%Y %H:%M')}`\n"
-        text += f"📝 {notif['text'][:50]}\n"
-        text += f"🆔 ID: `{notif_id}`\n\n"
-    
-    text += "\n💡 **Чтобы удалить уведомление:**\nОтправьте команду:\n`/delete_уведомления_ID`"
-    
-    await message.reply(text, parse_mode='Markdown')
-
-
-# Удаление уведомления
-@dp.message_handler(lambda m: m.text and m.text.startswith('/delete_'))
-async def delete_notification(message: types.Message):
-    notif_id = message.text.replace('/delete_', '')
-    
-    if notif_id in notifications:
-        del notifications[notif_id]
-        save_data()
+        now = datetime.now()
         
-        await message.reply("✅ **Уведомление удалено!**", parse_mode='Markdown')
+        # Определяем статус
+        if notif.get('notified', False):
+            status = "✅ ВЫПОЛНЕНО"
+            status_emoji = "✅"
+        elif now >= notify_time:
+            status = "⏰ ПРОСРОЧЕНО"
+            status_emoji = "⚠️"
+        else:
+            status = "⏳ ОЖИДАЕТ"
+            status_emoji = "⏳"
         
-        if ADMIN_ID:
-            success, _ = await create_backup(ADMIN_ID)
-            if success:
-                msg = await message.reply("✅ **Бэкап создан на Яндекс.Диске**")
-                await asyncio.sleep(3)
-                await msg.delete()
+        # Рассчитываем время до срабатывания
+        time_left = ""
+        if not notif.get('notified', False) and now < notify_time:
+            delta = notify_time - now
+            days = delta.days
+            hours = delta.seconds // 3600
+            minutes = (delta.seconds % 3600) // 60
+            
+            if days > 0:
+                time_left = f"\n📅 **Осталось:** {days} дн. {hours} ч."
+            elif hours > 0:
+                time_left = f"\n📅 **Осталось:** {hours} ч. {minutes} мин."
             else:
-                await message.reply("⚠️ **Бэкап не создан** (нет доступа к Яндекс.Диску)")
+                time_left = f"\n📅 **Осталось:** {minutes} мин."
+        
+        text = (
+            f"{status_emoji} **Уведомление #{notif.get('num', notif_id)}**\n"
+            f"📝 **Текст:** {notif['text']}\n"
+            f"⏰ **Время:** {notify_time.strftime('%d.%m.%Y в %H:%M')}\n"
+            f"📊 **Статус:** {status}{time_left}"
+        )
+        
+        keyboard = InlineKeyboardMarkup(row_width=2)
+        keyboard.add(
+            InlineKeyboardButton("✏️ Изменить", callback_data=f"edit_{notif_id}"),
+            InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_{notif_id}")
+        )
+        
+        await message.reply(text, reply_markup=keyboard, parse_mode='Markdown')
+    
+    await message.reply(
+        f"📊 **Всего уведомлений:** {len(notifications)}\n"
+        f"💡 **Активных:** {sum(1 for n in notifications.values() if not n.get('notified', False))}",
+        parse_mode='Markdown'
+    )
+
+
+# Изменение уведомления
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_'))
+async def edit_notification_start(callback: types.CallbackQuery, state: FSMContext):
+    notif_id = callback.data.replace('edit_', '')
+    
+    if notif_id not in notifications:
+        await callback.answer("Уведомление не найдено")
+        return
+    
+    await state.update_data(edit_id=notif_id)
+    
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("✏️ Изменить текст", callback_data="edit_text"),
+        InlineKeyboardButton("⏰ Изменить время", callback_data="edit_time")
+    )
+    keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit"))
+    
+    await bot.send_message(
+        callback.from_user.id,
+        f"✏️ **Что хотите изменить в уведомлении #{notifications[notif_id].get('num', notif_id)}?**",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "edit_text", state="*")
+async def edit_notification_text(callback: types.CallbackQuery, state: FSMContext):
+    await bot.send_message(
+        callback.from_user.id,
+        "✏️ **Введите новый текст уведомления:**",
+        parse_mode='Markdown'
+    )
+    await NotificationStates.waiting_for_edit_text.set()
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "edit_time", state="*")
+async def edit_notification_time(callback: types.CallbackQuery, state: FSMContext):
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("⏰ В часах", callback_data="time_hours"),
+        InlineKeyboardButton("📅 В днях", callback_data="time_days"),
+        InlineKeyboardButton("📆 В месяцах", callback_data="time_months"),
+        InlineKeyboardButton("🗓️ Конкретная дата", callback_data="time_specific")
+    )
+    
+    await bot.send_message(
+        callback.from_user.id,
+        "⏱️ **Выберите новый период:**",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+    await NotificationStates.waiting_for_edit_time.set()
+    await callback.answer()
+
+
+@dp.message_handler(state=NotificationStates.waiting_for_edit_text)
+async def save_edited_text(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    notif_id = data.get('edit_id')
+    
+    if notif_id and notif_id in notifications:
+        notifications[notif_id]['text'] = message.text
+        save_data()
+        await message.reply(f"✅ **Текст уведомления #{notifications[notif_id].get('num', notif_id)} изменен!**", parse_mode='Markdown')
+        
+        # Создаем бэкап
+        if ADMIN_ID:
+            await create_backup(ADMIN_ID)
     else:
         await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+    
+    await state.finish()
 
 
-# Обработка кнопок уведомлений
+@dp.callback_query_handler(lambda c: c.data.startswith('time_'), state=NotificationStates.waiting_for_edit_time)
+async def get_edit_time_type(callback: types.CallbackQuery, state: FSMContext):
+    time_type = callback.data.replace('time_', '')
+    await state.update_data(edit_time_type=time_type)
+    
+    if time_type == 'hours':
+        await bot.send_message(callback.from_user.id, "⌛ **Введите количество часов:**", parse_mode='Markdown')
+        await NotificationStates.waiting_for_hours.set()
+    elif time_type == 'days':
+        await bot.send_message(callback.from_user.id, "📅 **Введите количество дней:**", parse_mode='Markdown')
+        await NotificationStates.waiting_for_days.set()
+    elif time_type == 'months':
+        await bot.send_message(callback.from_user.id, "📆 **Введите количество месяцев:**", parse_mode='Markdown')
+        await NotificationStates.waiting_for_months.set()
+    elif time_type == 'specific':
+        await bot.send_message(callback.from_user.id, "🗓️ **Введите новую дату** (ГГГГ-ММ-ДД ЧЧ:ММ):\nПример: `2025-12-31 23:59`", parse_mode='Markdown')
+        await NotificationStates.waiting_for_specific_date.set()
+    
+    await callback.answer()
+
+
+# Переопределяем save_notification для редактирования
+@dp.message_handler(state=NotificationStates.waiting_for_hours)
+async def set_hours_edit(message: types.Message, state: FSMContext):
+    try:
+        hours = int(message.text)
+        if hours <= 0:
+            await message.reply("❌ **Ошибка!** Введите положительное число часов.", parse_mode='Markdown')
+            return
+        
+        data = await state.get_data()
+        notif_id = data.get('edit_id')
+        
+        if notif_id and notif_id in notifications:
+            notify_time = datetime.now() + timedelta(hours=hours)
+            notifications[notif_id]['time'] = notify_time.isoformat()
+            notifications[notif_id]['notified'] = False
+            save_data()
+            await message.reply(f"✅ **Время уведомления #{notifications[notif_id].get('num', notif_id)} изменено!**\n⏰ {notify_time.strftime('%Y-%m-%d %H:%M:%S')}", parse_mode='Markdown')
+            
+            # Создаем бэкап
+            if ADMIN_ID:
+                await create_backup(ADMIN_ID)
+        else:
+            await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+    except ValueError:
+        await message.reply("❌ **Ошибка!** Введите корректное число часов.", parse_mode='Markdown')
+    
+    await state.finish()
+
+
+@dp.message_handler(state=NotificationStates.waiting_for_days)
+async def set_days_edit(message: types.Message, state: FSMContext):
+    try:
+        days = int(message.text)
+        if days <= 0:
+            await message.reply("❌ **Ошибка!** Введите положительное число дней.", parse_mode='Markdown')
+            return
+        
+        data = await state.get_data()
+        notif_id = data.get('edit_id')
+        
+        if notif_id and notif_id in notifications:
+            notify_time = datetime.now() + timedelta(days=days)
+            notifications[notif_id]['time'] = notify_time.isoformat()
+            notifications[notif_id]['notified'] = False
+            save_data()
+            await message.reply(f"✅ **Время уведомления #{notifications[notif_id].get('num', notif_id)} изменено!**\n⏰ {notify_time.strftime('%Y-%m-%d %H:%M:%S')}", parse_mode='Markdown')
+            
+            # Создаем бэкап
+            if ADMIN_ID:
+                await create_backup(ADMIN_ID)
+        else:
+            await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+    except ValueError:
+        await message.reply("❌ **Ошибка!** Введите корректное число дней.", parse_mode='Markdown')
+    
+    await state.finish()
+
+
+@dp.message_handler(state=NotificationStates.waiting_for_months)
+async def set_months_edit(message: types.Message, state: FSMContext):
+    try:
+        months = int(message.text)
+        if months <= 0:
+            await message.reply("❌ **Ошибка!** Введите положительное число месяцев.", parse_mode='Markdown')
+            return
+        
+        data = await state.get_data()
+        notif_id = data.get('edit_id')
+        
+        if notif_id and notif_id in notifications:
+            days = months * 30
+            notify_time = datetime.now() + timedelta(days=days)
+            notifications[notif_id]['time'] = notify_time.isoformat()
+            notifications[notif_id]['notified'] = False
+            save_data()
+            await message.reply(f"✅ **Время уведомления #{notifications[notif_id].get('num', notif_id)} изменено!**\n⏰ {notify_time.strftime('%Y-%m-%d %H:%M:%S')}", parse_mode='Markdown')
+            
+            # Создаем бэкап
+            if ADMIN_ID:
+                await create_backup(ADMIN_ID)
+        else:
+            await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+    except ValueError:
+        await message.reply("❌ **Ошибка!** Введите корректное число месяцев.", parse_mode='Markdown')
+    
+    await state.finish()
+
+
+@dp.message_handler(state=NotificationStates.waiting_for_specific_date)
+async def set_specific_date_edit(message: types.Message, state: FSMContext):
+    try:
+        notify_time = datetime.strptime(message.text, "%Y-%m-%d %H:%M")
+        
+        if notify_time <= datetime.now():
+            await message.reply("❌ **Ошибка!** Дата должна быть в будущем!", parse_mode='Markdown')
+            return
+        
+        data = await state.get_data()
+        notif_id = data.get('edit_id')
+        
+        if notif_id and notif_id in notifications:
+            notifications[notif_id]['time'] = notify_time.isoformat()
+            notifications[notif_id]['notified'] = False
+            save_data()
+            await message.reply(f"✅ **Время уведомления #{notifications[notif_id].get('num', notif_id)} изменено!**\n⏰ {notify_time.strftime('%Y-%m-%d %H:%M:%S')}", parse_mode='Markdown')
+            
+            # Создаем бэкап
+            if ADMIN_ID:
+                await create_backup(ADMIN_ID)
+        else:
+            await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+    except ValueError:
+        await message.reply("❌ **Ошибка!** Неверный формат даты!\nПример: `2025-12-31 23:59`", parse_mode='Markdown')
+    
+    await state.finish()
+
+
+@dp.callback_query_handler(lambda c: c.data == "cancel_edit", state="*")
+async def cancel_edit(callback: types.CallbackQuery, state: FSMContext):
+    await state.finish()
+    await bot.send_message(callback.from_user.id, "✅ **Редактирование отменено**", parse_mode='Markdown')
+    await callback.answer()
+
+
+# Удаление уведомления (обновленное)
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('delete_'))
 async def handle_delete_notification(callback: types.CallbackQuery):
     notif_id = callback.data.replace('delete_', '')
     
     if notif_id in notifications:
+        notif_num = notifications[notif_id].get('num', notif_id)
         del notifications[notif_id]
+        
+        # Перенумеровываем оставшиеся уведомления
+        for i, (nid, notif) in enumerate(notifications.items(), 1):
+            notif['num'] = i
+            # Обновляем ключ если нужно (сохраняем старый ID для совместимости)
+            if nid != str(i):
+                notifications[str(i)] = notifications.pop(nid)
+        
         save_data()
         
         await bot.edit_message_text(
-            "✅ **Уведомление удалено**",
+            f"✅ **Уведомление #{notif_num} удалено**",
             callback.from_user.id,
             callback.message.message_id,
             parse_mode='Markdown'
         )
         
         if ADMIN_ID:
-            success, _ = await create_backup(ADMIN_ID)
+            success, _, location = await create_backup(ADMIN_ID)
             if success:
-                msg = await bot.send_message(callback.from_user.id, "✅ **Бэкап создан**")
+                msg = await bot.send_message(callback.from_user.id, f"✅ **Бэкап создан** ({location})")
                 await asyncio.sleep(3)
                 await msg.delete()
     else:
@@ -995,6 +1305,7 @@ async def handle_delete_notification(callback: types.CallbackQuery):
     await callback.answer()
 
 
+# Обработка кнопок уведомлений
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('snooze_'))
 async def handle_snooze(callback: types.CallbackQuery):
     parts = callback.data.split('_')
@@ -1012,7 +1323,7 @@ async def handle_snooze(callback: types.CallbackQuery):
         save_data()
         
         await bot.edit_message_text(
-            f"⏰ **Уведомление отложено на {hours} час(ов)**\n"
+            f"⏰ **Уведомление #{notifications[notif_id].get('num', notif_id)} отложено на {hours} час(ов)**\n"
             f"Новое время: {new_time.strftime('%H:%M %d.%m.%Y')}",
             callback.from_user.id,
             callback.message.message_id,
@@ -1041,10 +1352,77 @@ async def settings_menu(message: types.Message):
     )
     keyboard.add(
         InlineKeyboardButton("🔑 Авторизация Яндекс.Диска", callback_data="auth_yandex"),
+        InlineKeyboardButton("📤 Восстановить из бэкапа", callback_data="restore_backup"),
         InlineKeyboardButton("ℹ️ Информация", callback_data="info")
     )
     
     await message.reply("⚙️ **НАСТРОЙКИ**", reply_markup=keyboard, parse_mode='Markdown')
+
+
+@dp.callback_query_handler(lambda c: c.data == "restore_backup")
+async def restore_backup_menu(callback: types.CallbackQuery):
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        InlineKeyboardButton("📎 Загрузить файл бэкапа", callback_data="upload_backup"),
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel_restore")
+    )
+    
+    await bot.send_message(
+        callback.from_user.id,
+        "📤 **Восстановление из бэкапа**\n\n"
+        "Отправьте JSON файл бэкапа, который был создан ранее.\n"
+        "⚠️ **Внимание!** Текущие данные будут заменены!",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "upload_backup")
+async def upload_backup_file(callback: types.CallbackQuery):
+    await bot.send_message(
+        callback.from_user.id,
+        "📎 **Отправьте JSON файл бэкапа**\n\n"
+        "Файл должен быть в формате JSON, созданный этим ботом.",
+        parse_mode='Markdown'
+    )
+    await SettingsStates.waiting_for_upload_backup.set()
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "cancel_restore")
+async def cancel_restore(callback: types.CallbackQuery):
+    await bot.send_message(callback.from_user.id, "✅ **Восстановление отменено**", parse_mode='Markdown')
+    await callback.answer()
+
+
+@dp.message_handler(content_types=['document'], state=SettingsStates.waiting_for_upload_backup)
+async def receive_backup_file(message: types.Message, state: FSMContext):
+    try:
+        file_id = message.document.file_id
+        file = await bot.get_file(file_id)
+        file_path = file.file_path
+        
+        # Скачиваем файл
+        downloaded_file = await bot.download_file(file_path)
+        backup_data = json.loads(downloaded_file.read().decode('utf-8'))
+        
+        # Восстанавливаем данные
+        if await restore_from_backup(backup_data):
+            await message.reply(
+                "✅ **Данные успешно восстановлены из бэкапа!**\n\n"
+                f"📝 Восстановлено уведомлений: {len(notifications)}\n"
+                f"⚙️ Настройки восстановлены",
+                parse_mode='Markdown'
+            )
+        else:
+            await message.reply("❌ **Ошибка восстановления!** Файл бэкапа поврежден или имеет неверный формат.", parse_mode='Markdown')
+    except json.JSONDecodeError:
+        await message.reply("❌ **Ошибка!** Файл не является корректным JSON файлом.", parse_mode='Markdown')
+    except Exception as e:
+        await message.reply(f"❌ **Ошибка при восстановлении:** {str(e)}", parse_mode='Markdown')
+    
+    await state.finish()
 
 
 @dp.callback_query_handler(lambda c: c.data == "toggle_notifications")
@@ -1174,21 +1552,29 @@ async def show_info(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# Создание бэкапа вручную
+# Создание бэкапа вручную (обновленное)
 @dp.message_handler(lambda m: m.text == "💾 Создать бэкап")
 async def manual_backup(message: types.Message):
     if not ADMIN_ID:
         await message.reply("❌ Ошибка: ADMIN_ID не задан", parse_mode='Markdown')
         return
     
-    await message.reply("⏳ **Создание бэкапа...**", parse_mode='Markdown')
-    success, backup_file = await create_backup(ADMIN_ID)
+    status_msg = await message.reply("⏳ **Создание бэкапа...**", parse_mode='Markdown')
+    success, backup_file, location = await create_backup(ADMIN_ID)
+    
     if success:
-        msg = await message.reply("✅ **Бэкап создан на Яндекс.Диске**")
-        await asyncio.sleep(3)
-        await msg.delete()
+        await status_msg.edit_text(f"✅ **Бэкап создан** ({location})", parse_mode='Markdown')
+        await asyncio.sleep(2)
+        await status_msg.delete()
     else:
-        await message.reply("⚠️ **Бэкап не создан!**\nПроверьте доступ к Яндекс.Диску в настройках.", parse_mode='Markdown')
+        await status_msg.edit_text(
+            "⚠️ **Бэкап не создан!**\n\n"
+            "Возможные причины:\n"
+            "- Нет доступа к Яндекс.Диску\n"
+            "- Бэкап отправлен в Telegram (проверьте чат)\n\n"
+            "💡 **Решение:** Настройте авторизацию в меню настроек",
+            parse_mode='Markdown'
+        )
 
 
 # Команда /restart
@@ -1227,6 +1613,13 @@ async def cancel_operation(message: types.Message, state: FSMContext):
 async def on_startup(dp):
     init_folders()
     load_data()
+    
+    # Перенумеровываем уведомления при запуске
+    for i, (notif_id, notif) in enumerate(notifications.items(), 1):
+        notif['num'] = i
+        if notif_id != str(i):
+            notifications[str(i)] = notifications.pop(notif_id)
+    save_data()
     
     print(f"\n{'='*50}")
     print(f"🤖 БОТ ДЛЯ УВЕДОМЛЕНИЙ v{BOT_VERSION} ({BOT_VERSION_DATE})")
