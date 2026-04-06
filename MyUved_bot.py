@@ -33,21 +33,9 @@ CLIENT_ID = os.getenv('CLIENT_ID')
 CLIENT_SECRET = os.getenv('CLIENT_SECRET')
 REDIRECT_URI = os.getenv('REDIRECT_URI', 'https://oauth.yandex.ru/verification_code')
 
-# ДИАГНОСТИКА - проверка загрузки переменных
-print(f"🔍 ДИАГНОСТИКА ЗАГРУЗКИ ПЕРЕМЕННЫХ:")
-print(f"BOT_TOKEN: {'✅ ЗАГРУЖЕН' if BOT_TOKEN else '❌ НЕ ЗАГРУЖЕН'} (длина: {len(BOT_TOKEN) if BOT_TOKEN else 0})")
-print(f"ADMIN_ID: {'✅ ЗАГРУЖЕН' if ADMIN_ID else '❌ НЕ ЗАГРУЖЕН'}")
-print(f"CLIENT_ID: {'✅ ЗАГРУЖЕН' if CLIENT_ID else '❌ НЕ ЗАГРУЖЕН'} (значение: {CLIENT_ID[:15] + '...' if CLIENT_ID and len(CLIENT_ID) > 15 else CLIENT_ID})")
-print(f"CLIENT_SECRET: {'✅ ЗАГРУЖЕН' if CLIENT_SECRET else '❌ НЕ ЗАГРУЖЕН'}")
-print(f"REDIRECT_URI: {REDIRECT_URI}")
-
 # Проверка наличия всех необходимых переменных
 if not all([BOT_TOKEN, CLIENT_ID, CLIENT_SECRET]):
     print("❌ Ошибка: Не все переменные окружения заданы!")
-    print("Пожалуйста, проверьте настройки на bothost:")
-    print("  - BOT_TOKEN")
-    print("  - CLIENT_ID")
-    print("  - CLIENT_SECRET")
     exit(1)
 
 # Инициализация бота с MemoryStorage для FSM
@@ -179,26 +167,16 @@ def get_next_weekday(target_weekdays: List[int], hour: int, minute: int) -> Opti
 
 def get_auth_url() -> str:
     """Получение URL для авторизации в Яндекс"""
-    if not CLIENT_ID:
-        print("❌ ОШИБКА: CLIENT_ID не задан! Проверьте переменные окружения.")
-        return ""
-    
     params = {
         "response_type": "code",
         "client_id": CLIENT_ID,
         "redirect_uri": REDIRECT_URI
     }
-    url = f"{YANDEX_OAUTH_URL}?{urlencode(params)}"
-    print(f"✅ Сгенерирован URL авторизации: {url[:80]}...")
-    return url
+    return f"{YANDEX_OAUTH_URL}?{urlencode(params)}"
 
 
 def get_token_url() -> str:
     """Получение URL для получения токена напрямую"""
-    if not CLIENT_ID:
-        print("❌ ОШИБКА: CLIENT_ID не задан! Проверьте переменные окружения.")
-        return ""
-    
     params = {
         "response_type": "token",
         "client_id": CLIENT_ID
@@ -884,18 +862,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @dp.callback_query_handler(lambda c: c.data == "start_auth")
 async def start_auth(callback: types.CallbackQuery, state: FSMContext):
-    # Проверяем наличие CLIENT_ID перед показом кнопок
-    if not CLIENT_ID:
-        await bot.send_message(
-            callback.from_user.id,
-            "❌ **Ошибка конфигурации бота!**\n\n"
-            "Отсутствует CLIENT_ID для авторизации.\n"
-            "Пожалуйста, сообщите администратору.",
-            parse_mode='Markdown'
-        )
-        await callback.answer()
-        return
-    
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
         InlineKeyboardButton("🔑 Через код авторизации", callback_data="auth_method_code"),
@@ -919,32 +885,20 @@ async def start_auth(callback: types.CallbackQuery, state: FSMContext):
 async def auth_method_code(callback: types.CallbackQuery, state: FSMContext):
     auth_url = get_auth_url()
     
-    if not auth_url:
-        await bot.send_message(
-            callback.from_user.id,
-            "❌ **Ошибка!** Не удалось сгенерировать URL авторизации.\n"
-            "Проверьте настройки CLIENT_ID.",
-            parse_mode='Markdown'
-        )
-        await callback.answer()
-        return
-    
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("🔑 Перейти к авторизации", url=auth_url))
-    keyboard.add(InlineKeyboardButton("✅ Я получил код", callback_data="enter_code"))
-    keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="back_to_auth_methods"))
-    
+    # Отправляем сообщение со ссылкой и сразу переходим в состояние ожидания кода
     await bot.send_message(
         callback.from_user.id,
-        "🔑 **Авторизация через код**\n\n"
-        "1️⃣ Нажмите на кнопку ниже\n"
-        "2️⃣ Войдите в аккаунт Яндекс\n"
-        "3️⃣ Разрешите доступ\n"
-        "4️⃣ Скопируйте код из адресной строки (часть после `code=`)\n"
-        "5️⃣ Нажмите «Я получил код» и отправьте его\n\n"
-        "⏰ **У вас есть 3 минуты** на ввод кода",
-        reply_markup=keyboard,
-        parse_mode='Markdown'
+        f"🔑 **Авторизация через код**\n\n"
+        f"1️⃣ Перейдите по ссылке для авторизации:\n"
+        f"🔗 [Нажмите для авторизации]({auth_url})\n\n"
+        f"2️⃣ Войдите в аккаунт Яндекс\n"
+        f"3️⃣ Разрешите доступ\n"
+        f"4️⃣ Скопируйте код из адресной строки (часть после `code=`)\n"
+        f"5️⃣ **Отправьте код сюда текстовым сообщением**\n\n"
+        f"⏰ **У вас есть 3 минуты** на ввод кода\n\n"
+        f"📝 Пример кода: `5j4iyexor5ltn4ym`",
+        parse_mode='Markdown',
+        disable_web_page_preview=True
     )
     await AuthStates.waiting_for_yandex_code.set()
     await callback.answer()
@@ -954,32 +908,19 @@ async def auth_method_code(callback: types.CallbackQuery, state: FSMContext):
 async def auth_method_token(callback: types.CallbackQuery, state: FSMContext):
     token_url = get_token_url()
     
-    if not token_url:
-        await bot.send_message(
-            callback.from_user.id,
-            "❌ **Ошибка!** Не удалось сгенерировать URL для получения токена.\n"
-            "Проверьте настройки CLIENT_ID.",
-            parse_mode='Markdown'
-        )
-        await callback.answer()
-        return
-    
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("🔓 Получить токен", url=token_url))
-    keyboard.add(InlineKeyboardButton("📝 Ввести токен", callback_data="enter_direct_token"))
-    keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="back_to_auth_methods"))
-    
     await bot.send_message(
         callback.from_user.id,
-        "🔓 **Авторизация через токен**\n\n"
-        "1️⃣ Нажмите на кнопку «Получить токен»\n"
-        "2️⃣ Войдите в аккаунт Яндекс\n"
-        "3️⃣ Разрешите доступ\n"
-        "4️⃣ Скопируйте токен из адресной строки (часть после `access_token=`)\n"
-        "5️⃣ Нажмите «Ввести токен» и отправьте его\n\n"
-        "⏰ **У вас есть 3 минуты** на ввод токена",
-        reply_markup=keyboard,
-        parse_mode='Markdown'
+        f"🔓 **Авторизация через токен**\n\n"
+        f"1️⃣ Перейдите по ссылке для получения токена:\n"
+        f"🔗 [Получить токен]({token_url})\n\n"
+        f"2️⃣ Войдите в аккаунт Яндекс\n"
+        f"3️⃣ Разрешите доступ\n"
+        f"4️⃣ Скопируйте токен из адресной строки (часть после `access_token=`)\n"
+        f"5️⃣ **Отправьте токен сюда текстовым сообщением**\n\n"
+        f"⏰ **У вас есть 3 минуты** на ввод токена\n\n"
+        f"📝 Пример токена: `y0_AgAAAAABX...`",
+        parse_mode='Markdown',
+        disable_web_page_preview=True
     )
     await AuthStates.waiting_for_direct_token.set()
     await callback.answer()
@@ -995,40 +936,6 @@ async def back_to_auth_methods(callback: types.CallbackQuery, state: FSMContext)
 async def cancel_auth(callback: types.CallbackQuery, state: FSMContext):
     await state.finish()
     await cmd_start(callback.message, state)
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data == "enter_code")
-async def ask_for_code(callback: types.CallbackQuery):
-    await send_with_auto_delete(
-        callback.from_user.id,
-        f"🔑 **Введите код авторизации**\n\n"
-        f"Отправьте код, который вы получили после авторизации:\n"
-        f"📝 Пример: `5j4iyexor5ltn4ym`\n\n"
-        f"💡 **Важно:** Код нужно ввести текстовым сообщением!\n"
-        f"⏰ **У вас есть 3 минуты** на ввод кода",
-        delay=180
-    )
-    await AuthStates.waiting_for_yandex_code.set()
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data == "enter_direct_token")
-async def ask_for_direct_token(callback: types.CallbackQuery):
-    await send_with_auto_delete(
-        callback.from_user.id,
-        f"🔓 **Введите токен доступа напрямую**\n\n"
-        f"Отправьте токен, который вы получили:\n"
-        f"📝 Пример: `y0_AgAAAAABX...`\n\n"
-        f"💡 **Как получить токен:**\n"
-        f"1. Нажмите «Получить токен напрямую»\n"
-        f"2. Разрешите доступ\n"
-        f"3. Скопируйте токен из адресной строки\n"
-        f"4. Вставьте его сюда\n\n"
-        f"⏰ **У вас есть 3 минуты** на ввод токена",
-        delay=180
-    )
-    await AuthStates.waiting_for_direct_token.set()
     await callback.answer()
 
 
