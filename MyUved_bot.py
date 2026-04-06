@@ -671,6 +671,7 @@ async def browse_folders(user_id: int, current_path: str = "/") -> List[Dict]:
 
 
 async def check_notifications():
+    """Проверка уведомлений с поддержкой повторения каждый час для невыполненных"""
     global notifications_enabled
     while True:
         if notifications_enabled:
@@ -684,6 +685,7 @@ async def check_notifications():
                     if last_trigger.tzinfo is None:
                         last_trigger = pytz.UTC.localize(last_trigger)
                     
+                    # Для повторяющихся уведомлений проверяем, нужно ли отправить сегодня
                     should_trigger = False
                     
                     if repeat_type == 'every_day':
@@ -722,13 +724,25 @@ async def check_notifications():
                         notif['last_trigger'] = now.isoformat()
                         save_data()
                 else:
+                    # Обычное уведомление (не повторяющееся)
                     if notif.get('time'):
                         notify_time = datetime.fromisoformat(notif['time'])
                         if notify_time.tzinfo is None:
                             tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
                             notify_time = tz.localize(notify_time)
                         
+                        # Если уведомление просрочено и не выполнено
                         if now >= notify_time and not notif.get('notified', False):
+                            # Проверяем, когда было последнее напоминание
+                            last_reminder = notif.get('last_reminder')
+                            if last_reminder:
+                                last_reminder = datetime.fromisoformat(last_reminder)
+                                if last_reminder.tzinfo is None:
+                                    last_reminder = pytz.UTC.localize(last_reminder)
+                                # Если прошло меньше часа с последнего напоминания - пропускаем
+                                if (now - last_reminder).total_seconds() < 3600:
+                                    continue
+                            
                             keyboard = InlineKeyboardMarkup(row_width=2)
                             keyboard.add(
                                 InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{notif_id}"),
@@ -737,11 +751,12 @@ async def check_notifications():
                             
                             await bot.send_message(
                                 ADMIN_ID,
-                                f"🔔 НАПОМИНАНИЕ!\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}",
+                                f"🔔 НАПОМИНАНИЕ!\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}",
                                 reply_markup=keyboard
                             )
                             
-                            notifications[notif_id]['notified'] = True
+                            # Обновляем время последнего напоминания
+                            notifications[notif_id]['last_reminder'] = now.isoformat()
                             save_data()
                     
         await asyncio.sleep(30)
@@ -883,21 +898,15 @@ async def start_auth(callback: types.CallbackQuery, state: FSMContext):
 async def auth_method_code(callback: types.CallbackQuery, state: FSMContext):
     auth_url = get_auth_url()
     
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("🔑 Перейти к авторизации", url=auth_url))
-    keyboard.add(InlineKeyboardButton("✅ Я получил код", callback_data="enter_code"))
-    keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="back_to_auth_methods"))
-    
     await bot.send_message(
         callback.from_user.id,
-        "🔑 **Авторизация через код**\n\n"
-        "1️⃣ Нажмите на кнопку ниже\n"
-        "2️⃣ Войдите в аккаунт Яндекс\n"
-        "3️⃣ Разрешите доступ\n"
-        "4️⃣ Скопируйте код из адресной строки (часть после `code=`)\n"
-        "5️⃣ Нажмите «Я получил код» и отправьте его\n\n"
-        "⏰ **У вас есть 3 минуты** на ввод кода",
-        reply_markup=keyboard,
+        f"🔑 **Авторизация через код**\n\n"
+        f"1️⃣ Перейдите по ссылке: {auth_url}\n"
+        f"2️⃣ Войдите в аккаунт Яндекс\n"
+        f"3️⃣ Разрешите доступ\n"
+        f"4️⃣ Скопируйте код из адресной строки (часть после `code=`)\n"
+        f"5️⃣ **Отправьте полученный код в чат**\n\n"
+        f"⏰ **У вас есть 3 минуты** на ввод кода",
         parse_mode='Markdown'
     )
     await AuthStates.waiting_for_yandex_code.set()
@@ -908,30 +917,18 @@ async def auth_method_code(callback: types.CallbackQuery, state: FSMContext):
 async def auth_method_token(callback: types.CallbackQuery, state: FSMContext):
     token_url = get_token_url()
     
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("🔓 Получить токен", url=token_url))
-    keyboard.add(InlineKeyboardButton("📝 Ввести токен", callback_data="enter_direct_token"))
-    keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="back_to_auth_methods"))
-    
     await bot.send_message(
         callback.from_user.id,
-        "🔓 **Авторизация через токен**\n\n"
-        "1️⃣ Нажмите на кнопку «Получить токен»\n"
-        "2️⃣ Войдите в аккаунт Яндекс\n"
-        "3️⃣ Разрешите доступ\n"
-        "4️⃣ Скопируйте токен из адресной строки (часть после `access_token=`)\n"
-        "5️⃣ Нажмите «Ввести токен» и отправьте его\n\n"
-        "⏰ **У вас есть 3 минуты** на ввод токена",
-        reply_markup=keyboard,
+        f"🔓 **Авторизация через токен**\n\n"
+        f"1️⃣ Перейдите по ссылке: {token_url}\n"
+        f"2️⃣ Войдите в аккаунт Яндекс\n"
+        f"3️⃣ Разрешите доступ\n"
+        f"4️⃣ Скопируйте токен из адресной строки (часть после `access_token=`)\n"
+        f"5️⃣ **Отправьте полученный токен в чат**\n\n"
+        f"⏰ **У вас есть 3 минуты** на ввод токена",
         parse_mode='Markdown'
     )
     await AuthStates.waiting_for_direct_token.set()
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data == "back_to_auth_methods", state=AuthStates.waiting_for_yandex_code)
-async def back_to_auth_methods(callback: types.CallbackQuery, state: FSMContext):
-    await start_auth(callback, state)
     await callback.answer()
 
 
@@ -939,40 +936,6 @@ async def back_to_auth_methods(callback: types.CallbackQuery, state: FSMContext)
 async def cancel_auth(callback: types.CallbackQuery, state: FSMContext):
     await state.finish()
     await cmd_start(callback.message, state)
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data == "enter_code")
-async def ask_for_code(callback: types.CallbackQuery):
-    await send_with_auto_delete(
-        callback.from_user.id,
-        f"🔑 **Введите код авторизации**\n\n"
-        f"Отправьте код, который вы получили после авторизации:\n"
-        f"📝 Пример: `5j4iyexor5ltn4ym`\n\n"
-        f"💡 **Важно:** Код нужно ввести текстовым сообщением!\n"
-        f"⏰ **У вас есть 3 минуты** на ввод кода",
-        delay=180
-    )
-    await AuthStates.waiting_for_yandex_code.set()
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data == "enter_direct_token")
-async def ask_for_direct_token(callback: types.CallbackQuery):
-    await send_with_auto_delete(
-        callback.from_user.id,
-        f"🔓 **Введите токен доступа напрямую**\n\n"
-        f"Отправьте токен, который вы получили:\n"
-        f"📝 Пример: `y0_AgAAAAABX...`\n\n"
-        f"💡 **Как получить токен:**\n"
-        f"1. Нажмите «Получить токен напрямую»\n"
-        f"2. Разрешите доступ\n"
-        f"3. Скопируйте токен из адресной строки\n"
-        f"4. Вставьте его сюда\n\n"
-        f"⏰ **У вас есть 3 минуты** на ввод токена",
-        delay=180
-    )
-    await AuthStates.waiting_for_direct_token.set()
     await callback.answer()
 
 
@@ -1456,7 +1419,10 @@ async def set_every_day_time(message: types.Message, state: FSMContext):
             f"📝 {data['text']}\n"
             f"📅 **Тип:** Ежедневное\n"
             f"⏰ **Время:** {hour:02d}:{minute:02d}\n"
-            f"🔁 Будет повторяться каждый день",
+            f"🔁 Будет повторяться каждый день\n\n"
+            f"ℹ️ Когда уведомление сработает:\n"
+            f"• Нажмите «✅ Выполнено» - уведомление будет считаться выполненным\n"
+            f"• Если не нажать «Выполнено», уведомление будет повторяться каждый час",
             parse_mode='Markdown'
         )
         
@@ -1524,7 +1490,10 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
             f"📅 **Тип:** По дням недели\n"
             f"📆 **Дни:** {', '.join(days_names)}\n"
             f"⏰ **Время:** {hour:02d}:{minute:02d}\n"
-            f"🔁 Будет повторяться каждую неделю",
+            f"🔁 Будет повторяться каждую неделю\n\n"
+            f"ℹ️ Когда уведомление сработает:\n"
+            f"• Нажмите «✅ Выполнено» - уведомление будет считаться выполненным\n"
+            f"• Если не нажать «Выполнено», уведомление будет повторяться каждый час",
             parse_mode='Markdown'
         )
         
@@ -1565,9 +1534,9 @@ async def save_notification(message: types.Message, state: FSMContext, notify_ti
         f"📝 {data['text']}\n"
         f"⏰ {notify_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"📅 Сработает: {notify_time.strftime('%d.%m.%Y в %H:%M')}\n\n"
-        f"ℹ️ Когда уведомление сработает, вы сможете:\n"
-        f"• Нажать «✅ Выполнено» - уведомление удалится\n"
-        f"• Нажать «⏰ Напомнить через час» - уведомление повторится через час",
+        f"ℹ️ Когда уведомление сработает:\n"
+        f"• Нажмите «✅ Выполнено» - уведомление удалится\n"
+        f"• Если не нажать «Выполнено», уведомление будет повторяться каждый час",
         parse_mode='Markdown'
     )
     
@@ -1705,6 +1674,8 @@ async def handle_snooze(callback: types.CallbackQuery):
         
         notifications[notif_id]['time'] = new_time_utc.isoformat()
         notifications[notif_id]['notified'] = False
+        # Сбрасываем счетчик напоминаний
+        notifications[notif_id]['last_reminder'] = None
         save_data()
         
         try:
@@ -1715,7 +1686,8 @@ async def handle_snooze(callback: types.CallbackQuery):
         await bot.send_message(
             callback.from_user.id,
             f"⏰ **Уведомление отложено на {hours} час(ов)**\n"
-            f"Новое время: {new_time.strftime('%H:%M %d.%m.%Y')}",
+            f"Новое время: {new_time.strftime('%H:%M %d.%m.%Y')}\n\n"
+            f"ℹ️ Если не нажать «Выполнено», уведомление будет повторяться каждый час",
             parse_mode='Markdown'
         )
     
@@ -1758,7 +1730,7 @@ async def list_notifications(message: types.Message, state: FSMContext):
                 status = "✅ ВЫПОЛНЕНО"
                 status_emoji = "✅"
             elif now >= local_time:
-                status = "⏰ ПРОСРОЧЕНО"
+                status = "⏰ ПРОСРОЧЕНО (повторяется каждый час)"
                 status_emoji = "⚠️"
             else:
                 status = "⏳ ОЖИДАЕТ"
@@ -1797,7 +1769,8 @@ async def list_notifications(message: types.Message, state: FSMContext):
         text = (
             f"🔄 **Уведомление #{notif.get('num', notif_id)}**\n"
             f"📝 **Текст:** {notif['text']}\n"
-            f"📊 **Статус:** АКТИВНО{repeat_text}"
+            f"📊 **Статус:** АКТИВНО{repeat_text}\n\n"
+            f"ℹ️ Если не нажать «Выполнено», уведомление будет повторяться каждый час"
         )
         
         keyboard = InlineKeyboardMarkup(row_width=2)
