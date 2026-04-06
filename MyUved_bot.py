@@ -166,15 +166,17 @@ def get_next_weekday(target_weekdays: List[int], hour: int, minute: int) -> Opti
 
 
 def get_auth_url() -> str:
+    """Правильное формирование URL для авторизации"""
     params = {
-        "response_type": "code",
-        "client_id": CLIENT_ID,
+        "response_type": "code",  # Исправлено: response_type вместо responsetype
+        "client_id": CLIENT_ID,   # Исправлено: client_id вместо clientid
         "redirect_uri": REDIRECT_URI
     }
     return f"{YANDEX_OAUTH_URL}?{urlencode(params)}"
 
 
 def get_token_url() -> str:
+    """Получение URL для получения токена напрямую"""
     params = {
         "response_type": "token",
         "client_id": CLIENT_ID
@@ -685,7 +687,6 @@ async def check_notifications():
                     if last_trigger.tzinfo is None:
                         last_trigger = pytz.UTC.localize(last_trigger)
                     
-                    # Для повторяющихся уведомлений проверяем, нужно ли отправить сегодня
                     should_trigger = False
                     
                     if repeat_type == 'every_day':
@@ -731,15 +732,12 @@ async def check_notifications():
                             tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
                             notify_time = tz.localize(notify_time)
                         
-                        # Если уведомление просрочено и не выполнено
                         if now >= notify_time and not notif.get('notified', False):
-                            # Проверяем, когда было последнее напоминание
                             last_reminder = notif.get('last_reminder')
                             if last_reminder:
                                 last_reminder = datetime.fromisoformat(last_reminder)
                                 if last_reminder.tzinfo is None:
                                     last_reminder = pytz.UTC.localize(last_reminder)
-                                # Если прошло меньше часа с последнего напоминания - пропускаем
                                 if (now - last_reminder).total_seconds() < 3600:
                                     continue
                             
@@ -755,7 +753,6 @@ async def check_notifications():
                                 reply_markup=keyboard
                             )
                             
-                            # Обновляем время последнего напоминания
                             notifications[notif_id]['last_reminder'] = now.isoformat()
                             save_data()
                     
@@ -1674,7 +1671,6 @@ async def handle_snooze(callback: types.CallbackQuery):
         
         notifications[notif_id]['time'] = new_time_utc.isoformat()
         notifications[notif_id]['notified'] = False
-        # Сбрасываем счетчик напоминаний
         notifications[notif_id]['last_reminder'] = None
         save_data()
         
