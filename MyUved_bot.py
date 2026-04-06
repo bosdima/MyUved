@@ -402,7 +402,6 @@ class NotificationStates(StatesGroup):
     waiting_for_days = State()
     waiting_for_months = State()
     waiting_for_specific_date = State()
-    waiting_for_repeat_choice = State()
     waiting_for_weekdays = State()
     waiting_for_weekday_time = State()
     waiting_for_every_day_time = State()
@@ -1254,8 +1253,8 @@ async def get_time_type(callback: types.CallbackQuery, state: FSMContext):
         # Создаем клавиатуру с днями недели
         keyboard = InlineKeyboardMarkup(row_width=3)
         for name, day in WEEKDAYS_BUTTONS:
-            keyboard.add(InlineKeyboardButton(name, callback_data=f"wd_{day}"))
-        keyboard.add(InlineKeyboardButton("✅ Готово", callback_data="wd_done"))
+            keyboard.add(InlineKeyboardButton(name, callback_data=f"weekday_{day}"))
+        keyboard.add(InlineKeyboardButton("✅ Готово", callback_data="weekdays_done"))
         keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="back_to_time_type"))
         
         await bot.send_message(
@@ -1274,7 +1273,7 @@ async def get_time_type(callback: types.CallbackQuery, state: FSMContext):
 
 
 @dp.callback_query_handler(lambda c: c.data == "back_to_time_type", state=NotificationStates.waiting_for_weekdays)
-async def back_to_time_type_weekdays(callback: types.CallbackQuery, state: FSMContext):
+async def back_to_time_type_from_weekdays(callback: types.CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
         InlineKeyboardButton("⏰ В часах", callback_data="time_hours"),
@@ -1297,9 +1296,9 @@ async def back_to_time_type_weekdays(callback: types.CallbackQuery, state: FSMCo
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith('wd_'), state=NotificationStates.waiting_for_weekdays)
+@dp.callback_query_handler(lambda c: c.data.startswith('weekday_'), state=NotificationStates.waiting_for_weekdays)
 async def select_weekday(callback: types.CallbackQuery, state: FSMContext):
-    day = int(callback.data.split('_')[1])
+    day = int(callback.data.replace('weekday_', ''))
     data = await state.get_data()
     selected = data.get('selected_weekdays', [])
     
@@ -1314,8 +1313,8 @@ async def select_weekday(callback: types.CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(row_width=3)
     for name, d in WEEKDAYS_BUTTONS:
         text = f"✅ {name}" if d in selected else name
-        keyboard.add(InlineKeyboardButton(text, callback_data=f"wd_{d}"))
-    keyboard.add(InlineKeyboardButton("✅ Готово", callback_data="wd_done"))
+        keyboard.add(InlineKeyboardButton(text, callback_data=f"weekday_{d}"))
+    keyboard.add(InlineKeyboardButton("✅ Готово", callback_data="weekdays_done"))
     keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="back_to_time_type"))
     
     selected_names = [WEEKDAYS_NAMES[d] for d in sorted(selected)]
@@ -1334,7 +1333,7 @@ async def select_weekday(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "wd_done", state=NotificationStates.waiting_for_weekdays)
+@dp.callback_query_handler(lambda c: c.data == "weekdays_done", state=NotificationStates.waiting_for_weekdays)
 async def weekdays_done(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     selected = data.get('selected_weekdays', [])
