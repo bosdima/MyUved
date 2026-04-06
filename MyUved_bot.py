@@ -166,7 +166,6 @@ def get_next_weekday(target_weekdays: List[int], hour: int, minute: int) -> Opti
 
 
 def get_auth_url() -> str:
-    """Получение URL для авторизации в Яндекс"""
     params = {
         "response_type": "code",
         "client_id": CLIENT_ID,
@@ -176,7 +175,6 @@ def get_auth_url() -> str:
 
 
 def get_token_url() -> str:
-    """Получение URL для получения токена напрямую"""
     params = {
         "response_type": "token",
         "client_id": CLIENT_ID
@@ -404,6 +402,7 @@ class NotificationStates(StatesGroup):
     waiting_for_days = State()
     waiting_for_months = State()
     waiting_for_specific_date = State()
+    waiting_for_repeat_choice = State()
     waiting_for_weekdays = State()
     waiting_for_weekday_time = State()
     waiting_for_every_day_time = State()
@@ -658,20 +657,6 @@ async def get_yadisk_backups(user_id: int) -> List[Dict]:
         return []
 
 
-async def browse_folders(user_id: int, current_path: str = "/") -> List[Dict]:
-    try:
-        token = get_user_token(user_id)
-        if not token:
-            return []
-        
-        yandex_disk = YandexDiskAPI(token)
-        folders = yandex_disk.list_folders(current_path)
-        return folders
-    except Exception as e:
-        print(f"Ошибка просмотра папок: {e}")
-        return []
-
-
 async def check_notifications():
     global notifications_enabled
     while True:
@@ -885,7 +870,6 @@ async def start_auth(callback: types.CallbackQuery, state: FSMContext):
 async def auth_method_code(callback: types.CallbackQuery, state: FSMContext):
     auth_url = get_auth_url()
     
-    # Отправляем сообщение со ссылкой и сразу переходим в состояние ожидания кода
     await bot.send_message(
         callback.from_user.id,
         f"🔑 **Авторизация через код**\n\n"
@@ -1267,10 +1251,11 @@ async def get_time_type(callback: types.CallbackQuery, state: FSMContext):
         )
         await NotificationStates.waiting_for_every_day_time.set()
     elif time_type == 'weekdays':
+        # Создаем клавиатуру с днями недели
         keyboard = InlineKeyboardMarkup(row_width=3)
         for name, day in WEEKDAYS_BUTTONS:
             keyboard.add(InlineKeyboardButton(name, callback_data=f"wd_{day}"))
-        keyboard.add(InlineKeyboardButton("✅ Готово", callback_data="wd_done_for_time"))
+        keyboard.add(InlineKeyboardButton("✅ Готово", callback_data="wd_done"))
         keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="back_to_time_type"))
         
         await bot.send_message(
@@ -1289,7 +1274,7 @@ async def get_time_type(callback: types.CallbackQuery, state: FSMContext):
 
 
 @dp.callback_query_handler(lambda c: c.data == "back_to_time_type", state=NotificationStates.waiting_for_weekdays)
-async def back_to_time_type(callback: types.CallbackQuery, state: FSMContext):
+async def back_to_time_type_weekdays(callback: types.CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
         InlineKeyboardButton("⏰ В часах", callback_data="time_hours"),
@@ -1325,11 +1310,12 @@ async def select_weekday(callback: types.CallbackQuery, state: FSMContext):
     
     await state.update_data(selected_weekdays=selected)
     
+    # Обновляем клавиатуру
     keyboard = InlineKeyboardMarkup(row_width=3)
     for name, d in WEEKDAYS_BUTTONS:
         text = f"✅ {name}" if d in selected else name
         keyboard.add(InlineKeyboardButton(text, callback_data=f"wd_{d}"))
-    keyboard.add(InlineKeyboardButton("✅ Готово", callback_data="wd_done_for_time"))
+    keyboard.add(InlineKeyboardButton("✅ Готово", callback_data="wd_done"))
     keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="back_to_time_type"))
     
     selected_names = [WEEKDAYS_NAMES[d] for d in sorted(selected)]
@@ -1348,8 +1334,8 @@ async def select_weekday(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "wd_done_for_time", state=NotificationStates.waiting_for_weekdays)
-async def weekdays_done_for_time(callback: types.CallbackQuery, state: FSMContext):
+@dp.callback_query_handler(lambda c: c.data == "wd_done", state=NotificationStates.waiting_for_weekdays)
+async def weekdays_done(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     selected = data.get('selected_weekdays', [])
     
@@ -1455,6 +1441,7 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
         data = await state.get_data()
         weekdays_list = data.get('weekdays_list', [])
         
+        # Находим ближайшую дату
         first_time = get_next_weekday(weekdays_list, hour, minute)
         
         if not first_time:
@@ -1464,6 +1451,7 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
         next_num = len(notifications) + 1
         notif_id = str(next_num)
         
+        # Получаем названия дней для отображения
         days_names = [WEEKDAYS_NAMES[d] for d in sorted(weekdays_list)]
         
         notifications[notif_id] = {
