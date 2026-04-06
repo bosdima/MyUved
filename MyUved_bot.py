@@ -83,18 +83,6 @@ WEEKDAYS_NAMES = {
     0: "Понедельник", 1: "Вторник", 2: "Среда", 3: "Четверг", 4: "Пятница", 5: "Суббота", 6: "Воскресенье"
 }
 
-<<<<<<< HEAD
-=======
-# Варианты повторения
-REPEAT_OPTIONS = {
-    'no_repeat': '❌ Не повторять',
-    'every_day': '📅 Каждый день',
-    'every_week': '📆 Каждую неделю',
-    'every_month': '🗓️ Каждый месяц',
-    'weekdays': '📆 По дням недели'
-}
-
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
 
 def get_current_time():
     """Возвращает текущее время с учетом часового пояса"""
@@ -134,11 +122,7 @@ def parse_date(date_str: str) -> Optional[datetime]:
         except:
             return None
     
-<<<<<<< HEAD
     # Формат ДД.ММ ЧЧ:ММ
-=======
-    # Формат ДД.ММ ЧЧ:ММ (например: 06.04 9:00)
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
     match = re.match(r'^(\d{1,2})\.(\d{1,2})\s+(\d{1,2}):(\d{2})$', date_str)
     if match:
         day, month, hour, minute = match.groups()
@@ -347,10 +331,6 @@ class YandexDiskAPI:
             return False
     
     def list_folders(self, folder_path="/"):
-<<<<<<< HEAD
-=======
-        """Получает список папок в указанном пути"""
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
         try:
             url = f"{self.base_url}/resources"
             params = {"path": folder_path, "limit": 100}
@@ -422,12 +402,9 @@ class NotificationStates(StatesGroup):
     waiting_for_days = State()
     waiting_for_months = State()
     waiting_for_specific_date = State()
-    waiting_for_repeat_choice = State()
     waiting_for_weekdays = State()
     waiting_for_weekday_time = State()
     waiting_for_every_day_time = State()
-    waiting_for_every_week_time = State()
-    waiting_for_every_month_day = State()
     waiting_for_edit_notification = State()
     waiting_for_edit_text = State()
     waiting_for_edit_time = State()
@@ -680,10 +657,6 @@ async def get_yadisk_backups(user_id: int) -> List[Dict]:
 
 
 async def browse_folders(user_id: int, current_path: str = "/") -> List[Dict]:
-<<<<<<< HEAD
-=======
-    """Просматривает папки на Яндекс.Диске"""
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
     try:
         token = get_user_token(user_id)
         if not token:
@@ -705,7 +678,7 @@ async def check_notifications():
             
             for notif_id, notif in list(notifications.items()):
                 # Проверка для повторяющихся уведомлений
-                if notif.get('repeat_type') and notif.get('repeat_type') != 'no_repeat':
+                if notif.get('repeat_type') and notif.get('repeat_type') != 'no':
                     repeat_type = notif.get('repeat_type')
                     last_trigger = datetime.fromisoformat(notif.get('last_trigger', '2000-01-01T00:00:00'))
                     if last_trigger.tzinfo is None:
@@ -736,13 +709,8 @@ async def check_notifications():
                     if should_trigger:
                         keyboard = InlineKeyboardMarkup(row_width=2)
                         keyboard.add(
-<<<<<<< HEAD
                             InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{notif_id}"),
                             InlineKeyboardButton("⏰ Напомнить через час", callback_data=f"snooze_{notif_id}_1")
-=======
-                            InlineKeyboardButton("✅ Удалить", callback_data=f"delete_{notif_id}"),
-                            InlineKeyboardButton("⏰ Отложить на час", callback_data=f"snooze_{notif_id}_1")
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
                         )
                         
                         await bot.send_message(
@@ -763,13 +731,8 @@ async def check_notifications():
                         if now >= notify_time and not notif.get('notified', False):
                             keyboard = InlineKeyboardMarkup(row_width=2)
                             keyboard.add(
-<<<<<<< HEAD
                                 InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{notif_id}"),
                                 InlineKeyboardButton("⏰ Напомнить через час", callback_data=f"snooze_{notif_id}_1")
-=======
-                                InlineKeyboardButton("✅ Удалить", callback_data=f"delete_{notif_id}"),
-                                InlineKeyboardButton("⏰ Отложить на час", callback_data=f"snooze_{notif_id}_1")
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
                             )
                             
                             await bot.send_message(
@@ -835,7 +798,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
     if token:
         access, access_message = await check_yandex_access(user_id)
         if access:
-            # Проверяем наличие бэкапов на Яндекс.Диске
             backups = await get_yadisk_backups(user_id)
             backup_text = ""
             if backups:
@@ -896,7 +858,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
     )
 
 
-<<<<<<< HEAD
 @dp.callback_query_handler(lambda c: c.data == "start_auth")
 async def start_auth(callback: types.CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(row_width=2)
@@ -978,68 +939,6 @@ async def back_to_auth_methods(callback: types.CallbackQuery, state: FSMContext)
 async def cancel_auth(callback: types.CallbackQuery, state: FSMContext):
     await state.finish()
     await cmd_start(callback.message, state)
-=======
-@dp.callback_query_handler(lambda c: c.data == "offer_restore")
-async def offer_restore_handler(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    backups = await get_yadisk_backups(user_id)
-    
-    if not backups:
-        await bot.send_message(callback.from_user.id, "📭 **Нет доступных бэкапов для восстановления**", parse_mode='Markdown')
-        await callback.answer()
-        return
-    
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    for backup in backups:
-        backup_time = backup['name'].replace('backup_', '').replace('.json', '')
-        try:
-            backup_date = datetime.strptime(backup_time, '%Y%m%d_%H%M%S')
-            button_text = f"📦 {backup_date.strftime('%d.%m.%Y %H:%M:%S')}"
-        except:
-            button_text = f"📦 {backup['name']}"
-        keyboard.add(InlineKeyboardButton(button_text, callback_data=f"restore_backup_{backup['name']}"))
-    keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="decline_restore"))
-    
-    await bot.send_message(
-        callback.from_user.id,
-        "📦 **Выберите бэкап для восстановления:**",
-        reply_markup=keyboard,
-        parse_mode='Markdown'
-    )
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data == "decline_restore")
-async def decline_restore_handler(callback: types.CallbackQuery):
-    await bot.send_message(callback.from_user.id, "✅ **Восстановление отменено**", parse_mode='Markdown')
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("restore_backup_"))
-async def restore_selected_backup(callback: types.CallbackQuery, state: FSMContext):
-    backup_name = callback.data.replace("restore_backup_", "")
-    user_id = callback.from_user.id
-    
-    status_msg = await bot.send_message(
-        callback.from_user.id,
-        "⏳ **Восстановление из бэкапа...**",
-        parse_mode='Markdown'
-    )
-    
-    if await restore_from_yadisk_backup(backup_name, user_id):
-        await status_msg.edit_text(
-            "✅ **Данные успешно восстановлены из бэкапа!**\n\n"
-            f"📝 Уведомлений: {len(notifications)}",
-            parse_mode='Markdown'
-        )
-    else:
-        await status_msg.edit_text(
-            "❌ **Ошибка восстановления!**\n\n"
-            "Не удалось восстановить данные из бэкапа.",
-            parse_mode='Markdown'
-        )
-    
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
     await callback.answer()
 
 
@@ -1103,7 +1002,6 @@ async def receive_direct_token(message: types.Message, state: FSMContext):
         await status_msg.delete()
         await message.reply(result_message, parse_mode='Markdown')
         
-        # Проверяем наличие бэкапов
         backups = await get_yadisk_backups(user_id)
         if backups:
             keyboard = InlineKeyboardMarkup(row_width=2)
@@ -1125,7 +1023,6 @@ async def receive_direct_token(message: types.Message, state: FSMContext):
             parse_mode='Markdown'
         )
         
-        # Предлагаем другой способ
         keyboard = InlineKeyboardMarkup(row_width=2)
         keyboard.add(
             InlineKeyboardButton("🔑 Попробовать через код", callback_data="auth_method_code"),
@@ -1139,31 +1036,6 @@ async def receive_direct_token(message: types.Message, state: FSMContext):
         )
     
     await state.finish()
-<<<<<<< HEAD
-=======
-    await cmd_start(message, state)
-
-
-@dp.callback_query_handler(lambda c: c.data == "auth_yandex")
-async def auth_yandex(callback: types.CallbackQuery):
-    auth_url = get_auth_url()
-    
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("🔑 Перейти к авторизации", url=auth_url))
-    keyboard.add(InlineKeyboardButton("✅ Я получил код", callback_data="enter_code"))
-    
-    await bot.send_message(
-        callback.from_user.id,
-        f"🔑 **Авторизация Яндекс.Диска**\n\n"
-        f"1️⃣ Нажмите на кнопку ниже\n"
-        f"2️⃣ Войдите в аккаунт и разрешите доступ\n"
-        f"3️⃣ Скопируйте код из адресной строки (часть после `code=`)\n"
-        f"4️⃣ Нажмите «Я получил код» и отправьте его",
-        reply_markup=keyboard,
-        parse_mode='Markdown'
-    )
-    await callback.answer()
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
 
 
 @dp.message_handler(state=AuthStates.waiting_for_yandex_code)
@@ -1195,7 +1067,6 @@ async def receive_code(message: types.Message, state: FSMContext):
             await status_msg.delete()
             await message.reply(result_message, parse_mode='Markdown')
             
-            # Проверяем наличие бэкапов
             backups = await get_yadisk_backups(user_id)
             if backups:
                 keyboard = InlineKeyboardMarkup(row_width=2)
@@ -1213,13 +1084,11 @@ async def receive_code(message: types.Message, state: FSMContext):
             await status_msg.edit_text(
                 f"⚠️ **Токен получен, но доступ ограничен!**\n\n"
                 f"❌ {access_message}\n\n"
-<<<<<<< HEAD
                 f"⚠️ Проверьте настройки приложения\n\n"
                 f"Попробуйте другой способ авторизации.",
                 parse_mode='Markdown'
             )
             
-            # Предлагаем другой способ
             keyboard = InlineKeyboardMarkup(row_width=2)
             keyboard.add(
                 InlineKeyboardButton("🔓 Попробовать через токен", callback_data="auth_method_token"),
@@ -1231,13 +1100,6 @@ async def receive_code(message: types.Message, state: FSMContext):
                 reply_markup=keyboard,
                 parse_mode='Markdown'
             )
-=======
-                f"⚠️ Проверьте настройки приложения",
-                parse_mode='Markdown'
-            )
-        
-        await cmd_start(message, state)
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
     else:
         await status_msg.edit_text(
             f"❌ **Ошибка авторизации!**\n\n"
@@ -1246,7 +1108,6 @@ async def receive_code(message: types.Message, state: FSMContext):
             parse_mode='Markdown'
         )
         
-        # Предлагаем другой способ
         keyboard = InlineKeyboardMarkup(row_width=2)
         keyboard.add(
             InlineKeyboardButton("🔓 Попробовать через токен", callback_data="auth_method_token"),
@@ -1262,7 +1123,6 @@ async def receive_code(message: types.Message, state: FSMContext):
     await state.finish()
 
 
-<<<<<<< HEAD
 @dp.callback_query_handler(lambda c: c.data == "offer_restore")
 async def offer_restore_handler(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
@@ -1332,8 +1192,6 @@ async def auth_yandex(callback: types.CallbackQuery):
     await callback.answer()
 
 
-=======
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
 @dp.message_handler(lambda m: m.text == "➕ Добавить уведомление")
 async def add_notification_start(message: types.Message, state: FSMContext):
     await state.finish()
@@ -1446,7 +1304,6 @@ async def get_time_type(callback: types.CallbackQuery, state: FSMContext):
         )
         await NotificationStates.waiting_for_every_day_time.set()
     elif time_type == 'weekdays':
-        # Создаем клавиатуру с днями недели
         keyboard = InlineKeyboardMarkup(row_width=3)
         for name, day in WEEKDAYS_BUTTONS:
             keyboard.add(InlineKeyboardButton(name, callback_data=f"wd_{day}"))
@@ -1505,7 +1362,6 @@ async def select_weekday(callback: types.CallbackQuery, state: FSMContext):
     
     await state.update_data(selected_weekdays=selected)
     
-    # Обновляем клавиатуру
     keyboard = InlineKeyboardMarkup(row_width=3)
     for name, d in WEEKDAYS_BUTTONS:
         text = f"✅ {name}" if d in selected else name
@@ -1636,7 +1492,6 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
         data = await state.get_data()
         weekdays_list = data.get('weekdays_list', [])
         
-        # Находим ближайшую дату
         first_time = get_next_weekday(weekdays_list, hour, minute)
         
         if not first_time:
@@ -1646,7 +1501,6 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
         next_num = len(notifications) + 1
         notif_id = str(next_num)
         
-        # Получаем названия дней для отображения
         days_names = [WEEKDAYS_NAMES[d] for d in sorted(weekdays_list)]
         
         notifications[notif_id] = {
@@ -1686,162 +1540,11 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
 
 
-<<<<<<< HEAD
-=======
-async def save_notification_with_repeat(message: types.Message, state: FSMContext, notify_time: datetime):
-    """Сохраняет уведомление и спрашивает о повторении"""
-    data = await state.get_data()
-    await state.update_data(notify_time=notify_time.isoformat())
-    
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("❌ Нет, не повторять", callback_data="repeat_no"),
-        InlineKeyboardButton("📅 Каждый день", callback_data="repeat_every_day"),
-        InlineKeyboardButton("📆 Каждую неделю", callback_data="repeat_every_week"),
-        InlineKeyboardButton("🗓️ Каждый месяц", callback_data="repeat_every_month"),
-        InlineKeyboardButton("📆 По дням недели", callback_data="repeat_weekdays")
-    )
-    
-    await message.reply(
-        f"✅ **Время установлено!**\n\n"
-        f"📝 {data['text']}\n"
-        f"⏰ {notify_time.strftime('%d.%m.%Y в %H:%M')}\n\n"
-        f"🔄 **Нужно ли повторять это уведомление?**",
-        reply_markup=keyboard,
-        parse_mode='Markdown'
-    )
-    await NotificationStates.waiting_for_repeat_choice.set()
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith('repeat_'), state=NotificationStates.waiting_for_repeat_choice)
-async def handle_repeat_choice(callback: types.CallbackQuery, state: FSMContext):
-    repeat_type = callback.data.replace('repeat_', '')
-    data = await state.get_data()
-    notify_time = datetime.fromisoformat(data['notify_time'])
-    next_num = len(notifications) + 1
-    notif_id = str(next_num)
-    
-    tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
-    if notify_time.tzinfo is None:
-        notify_time = tz.localize(notify_time)
-    notify_time_utc = notify_time.astimezone(pytz.UTC)
-    
-    notifications[notif_id] = {
-        'text': data['text'],
-        'time': notify_time_utc.isoformat(),
-        'created': get_current_time().isoformat(),
-        'notified': False,
-        'num': next_num,
-        'repeat_type': repeat_type
-    }
-    
-    result_text = f"✅ **Уведомление #{next_num} создано!**\n📝 {data['text']}\n⏰ {notify_time.strftime('%d.%m.%Y в %H:%M')}"
-    
-    if repeat_type == 'no':
-        result_text += "\n\n❌ **Без повторения**"
-    elif repeat_type == 'every_day':
-        result_text += "\n\n🔄 **Будет повторяться каждый день**"
-        notifications[notif_id]['repeat_hour'] = notify_time.hour
-        notifications[notif_id]['repeat_minute'] = notify_time.minute
-        notifications[notif_id]['last_trigger'] = (notify_time - timedelta(days=1)).isoformat()
-    elif repeat_type == 'every_week':
-        result_text += f"\n\n🔄 **Будет повторяться каждую неделю**"
-        notifications[notif_id]['repeat_hour'] = notify_time.hour
-        notifications[notif_id]['repeat_minute'] = notify_time.minute
-        notifications[notif_id]['repeat_weekday'] = notify_time.weekday()
-        notifications[notif_id]['last_trigger'] = (notify_time - timedelta(days=7)).isoformat()
-    elif repeat_type == 'every_month':
-        result_text += f"\n\n🔄 **Будет повторяться каждый месяц**"
-        notifications[notif_id]['repeat_hour'] = notify_time.hour
-        notifications[notif_id]['repeat_minute'] = notify_time.minute
-        notifications[notif_id]['repeat_month_day'] = notify_time.day
-        notifications[notif_id]['last_trigger'] = (notify_time - timedelta(days=30)).isoformat()
-    elif repeat_type == 'weekdays':
-        # Запрашиваем дни недели
-        await state.update_data(temp_notification=notifications[notif_id])
-        keyboard = InlineKeyboardMarkup(row_width=3)
-        for name, day in WEEKDAYS_BUTTONS:
-            keyboard.add(InlineKeyboardButton(name, callback_data=f"wd_{day}"))
-        keyboard.add(InlineKeyboardButton("✅ Готово", callback_data="wd_done_for_repeat"))
-        
-        await bot.send_message(
-            callback.from_user.id,
-            "📅 **Выберите дни недели для повторения**\n\n"
-            "Нажимайте на дни, чтобы выбрать/отменить.\n"
-            "Когда закончите, нажмите «✅ Готово»",
-            reply_markup=keyboard,
-            parse_mode='Markdown'
-        )
-        await state.update_data(selected_weekdays=[])
-        await NotificationStates.waiting_for_weekdays.set()
-        await callback.answer()
-        return
-    
-    save_data()
-    
-    await bot.send_message(callback.from_user.id, result_text, parse_mode='Markdown')
-    
-    if ADMIN_ID:
-        success, _, location = await create_backup(ADMIN_ID)
-        if success:
-            msg = await bot.send_message(callback.from_user.id, f"✅ **Бэкап создан** ({location})")
-            await asyncio.sleep(3)
-            await msg.delete()
-    
-    await state.finish()
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data == "wd_done_for_repeat", state=NotificationStates.waiting_for_weekdays)
-async def weekdays_done_for_repeat(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    selected = data.get('selected_weekdays', [])
-    
-    if not selected:
-        await callback.answer("❌ Выберите хотя бы один день недели!")
-        return
-    
-    temp_notification = data.get('temp_notification', {})
-    next_num = len(notifications) + 1
-    notif_id = str(next_num)
-    
-    temp_notification['repeat_type'] = 'weekdays'
-    temp_notification['weekdays_list'] = selected
-    temp_notification['num'] = next_num
-    temp_notification['repeat_hour'] = datetime.fromisoformat(temp_notification['time']).hour
-    temp_notification['repeat_minute'] = datetime.fromisoformat(temp_notification['time']).minute
-    temp_notification['last_trigger'] = (datetime.fromisoformat(temp_notification['time']) - timedelta(days=7)).isoformat()
-    
-    notifications[notif_id] = temp_notification
-    save_data()
-    
-    days_names = [WEEKDAYS_NAMES[d] for d in sorted(selected)]
-    result_text = (
-        f"✅ **Уведомление #{next_num} создано!**\n"
-        f"📝 {temp_notification['text']}\n"
-        f"⏰ {datetime.fromisoformat(temp_notification['time']).strftime('%d.%m.%Y в %H:%M')}\n\n"
-        f"🔄 **Будет повторяться по дням недели:** {', '.join(days_names)}"
-    )
-    
-    await bot.send_message(callback.from_user.id, result_text, parse_mode='Markdown')
-    
-    if ADMIN_ID:
-        success, _, location = await create_backup(ADMIN_ID)
-        if success:
-            msg = await bot.send_message(callback.from_user.id, f"✅ **Бэкап создан** ({location})")
-            await asyncio.sleep(3)
-            await msg.delete()
-    
-    await state.finish()
-    await callback.answer()
-
-
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
 async def save_notification(message: types.Message, state: FSMContext, notify_time: datetime):
     data = await state.get_data()
-    await state.update_data(notify_time=notify_time.isoformat())
+    next_num = len(notifications) + 1
+    notif_id = str(next_num)
     
-<<<<<<< HEAD
     tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
     if notify_time.tzinfo is None:
         notify_time = tz.localize(notify_time)
@@ -1866,26 +1569,16 @@ async def save_notification(message: types.Message, state: FSMContext, notify_ti
         f"• Нажать «✅ Выполнено» - уведомление удалится\n"
         f"• Нажать «⏰ Напомнить через час» - уведомление повторится через час",
         parse_mode='Markdown'
-=======
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("❌ Нет, не повторять", callback_data="repeat_no"),
-        InlineKeyboardButton("📅 Каждый день", callback_data="repeat_every_day"),
-        InlineKeyboardButton("📆 Каждую неделю", callback_data="repeat_every_week"),
-        InlineKeyboardButton("🗓️ Каждый месяц", callback_data="repeat_every_month"),
-        InlineKeyboardButton("📆 По дням недели", callback_data="repeat_weekdays")
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
     )
     
-    await message.reply(
-        f"✅ **Время установлено!**\n\n"
-        f"📝 {data['text']}\n"
-        f"⏰ {notify_time.strftime('%d.%m.%Y в %H:%M')}\n\n"
-        f"🔄 **Нужно ли повторять это уведомление?**",
-        reply_markup=keyboard,
-        parse_mode='Markdown'
-    )
-    await NotificationStates.waiting_for_repeat_choice.set()
+    if ADMIN_ID:
+        success, _, location = await create_backup(ADMIN_ID)
+        if success:
+            msg = await message.reply(f"✅ **Бэкап создан** ({location})")
+            await asyncio.sleep(3)
+            await msg.delete()
+    
+    await state.finish()
 
 
 @dp.message_handler(state=NotificationStates.waiting_for_hours)
@@ -1953,7 +1646,6 @@ async def set_specific_date(message: types.Message, state: FSMContext):
         await save_notification(message, state, notify_time)
     except Exception as e:
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
-<<<<<<< HEAD
 
 
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('complete_'))
@@ -1964,7 +1656,6 @@ async def handle_complete(callback: types.CallbackQuery):
         notif_num = notifications[notif_id].get('num', notif_id)
         del notifications[notif_id]
         
-        # Перенумеровываем
         new_notifications = {}
         for i, (nid, notif) in enumerate(notifications.items(), 1):
             notif['num'] = i
@@ -2004,11 +1695,9 @@ async def handle_snooze(callback: types.CallbackQuery):
     hours = int(parts[2])
     
     if notif_id in notifications:
-        # Обновляем время уведомления
         now = get_current_time()
         new_time = now + timedelta(hours=hours)
         
-        # Конвертируем в UTC для хранения
         tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
         if new_time.tzinfo is None:
             new_time = tz.localize(new_time)
@@ -2031,8 +1720,6 @@ async def handle_snooze(callback: types.CallbackQuery):
         )
     
     await callback.answer()
-=======
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
 
 
 @dp.message_handler(lambda m: m.text == "📋 Список уведомлений")
@@ -2221,7 +1908,6 @@ async def handle_delete_notification(callback: types.CallbackQuery):
         notif_num = notifications[notif_id].get('num', notif_id)
         del notifications[notif_id]
         
-        # Перенумеровываем
         new_notifications = {}
         for i, (nid, notif) in enumerate(notifications.items(), 1):
             notif['num'] = i
@@ -2246,52 +1932,6 @@ async def handle_delete_notification(callback: types.CallbackQuery):
     await callback.answer()
 
 
-<<<<<<< HEAD
-=======
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('snooze_'))
-async def handle_snooze(callback: types.CallbackQuery):
-    parts = callback.data.split('_')
-    if len(parts) < 3:
-        await callback.answer("Ошибка")
-        return
-    
-    notif_id = parts[1]
-    hours = int(parts[2])
-    
-    if notif_id in notifications:
-        if notifications[notif_id].get('repeat_type') and notifications[notif_id].get('repeat_type') != 'no':
-            await callback.answer("Повторяющиеся уведомления нельзя отложить")
-            return
-        
-        old_time = datetime.fromisoformat(notifications[notif_id]['time'])
-        if old_time.tzinfo is None:
-            old_time = pytz.UTC.localize(old_time)
-        
-        tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
-        local_time = old_time.astimezone(tz)
-        new_local_time = local_time + timedelta(hours=hours)
-        new_utc_time = new_local_time.astimezone(pytz.UTC)
-        
-        notifications[notif_id]['time'] = new_utc_time.isoformat()
-        notifications[notif_id]['notified'] = False
-        save_data()
-        
-        try:
-            await bot.delete_message(callback.from_user.id, callback.message.message_id)
-        except:
-            pass
-        
-        await bot.send_message(
-            callback.from_user.id,
-            f"⏰ **Уведомление отложено на {hours} час(ов)**\n"
-            f"Новое время: {new_local_time.strftime('%H:%M %d.%m.%Y')}",
-            parse_mode='Markdown'
-        )
-    
-    await callback.answer()
-
-
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
 @dp.message_handler(lambda m: m.text == "⚙️ Настройки")
 async def settings_menu(message: types.Message, state: FSMContext):
     await state.finish()
@@ -2356,7 +1996,6 @@ async def select_backup_folder_start(callback: types.CallbackQuery, state: FSMCo
 
 
 async def show_folders(chat_id: int, current_path: str, state: FSMContext):
-    """Показывает список папок для выбора"""
     user_id = chat_id
     token = get_user_token(user_id)
     
@@ -2369,7 +2008,6 @@ async def show_folders(chat_id: int, current_path: str, state: FSMContext):
     
     keyboard = InlineKeyboardMarkup(row_width=1)
     
-    # Кнопка "Наверх" если не в корне
     if current_path != "/":
         parent_path = "/".join(current_path.rstrip('/').split('/')[:-1])
         if not parent_path:
@@ -2427,10 +2065,6 @@ async def create_new_folder(message: types.Message, state: FSMContext):
     data = await state.get_data()
     current_path = data.get('current_folder', '/')
     
-<<<<<<< HEAD
-=======
-    # Формируем путь к новой папке
->>>>>>> 54c0e93b4fc91b10f6f8ccb27d1962ef3bfeead6
     if current_path == "/":
         new_path = f"/{folder_name}"
     else:
@@ -2464,7 +2098,6 @@ async def select_current_folder(callback: types.CallbackQuery, state: FSMContext
         parse_mode='Markdown'
     )
     
-    # Создаем папку на диске
     token = get_user_token(callback.from_user.id)
     if token:
         yandex_disk = YandexDiskAPI(token)
@@ -2791,7 +2424,6 @@ async def on_startup(dp):
     init_folders()
     load_data()
     
-    # Перенумеровываем уведомления
     new_notifications = {}
     for i, (notif_id, notif) in enumerate(notifications.items(), 1):
         notif['num'] = i
