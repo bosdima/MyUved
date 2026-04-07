@@ -150,9 +150,9 @@ def parse_date(date_str: str) -> Optional[datetime]:
     return None
 
 
-def get_next_weekday(target_weekdays: List[int], hour: int, minute: int) -> Optional[datetime]:
+def get_next_weekday(target_weekdays: List[int], hour: int, minute: int, from_date: datetime = None) -> Optional[datetime]:
     """Получает следующую дату по дням недели"""
-    now = get_current_time()
+    now = from_date or get_current_time()
     tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
     
     for i in range(1, 15):
@@ -163,6 +163,31 @@ def get_next_weekday(target_weekdays: List[int], hour: int, minute: int) -> Opti
                 return result
     
     return None
+
+
+def get_next_month_day(target_day: int, hour: int, minute: int, from_date: datetime = None) -> Optional[datetime]:
+    """Получает следующую дату по дню месяца"""
+    now = from_date or get_current_time()
+    tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+    
+    # Пробуем в текущем месяце
+    try:
+        next_date = now.replace(day=target_day, hour=hour, minute=minute, second=0, microsecond=0)
+        if next_date > now:
+            return tz.localize(next_date)
+    except:
+        pass
+    
+    # Пробуем в следующем месяце
+    next_month = now.replace(day=1) + timedelta(days=32)
+    try:
+        next_date = next_month.replace(day=target_day, hour=hour, minute=minute, second=0, microsecond=0)
+        return tz.localize(next_date)
+    except:
+        # Если дня нет в месяце (например 31 февраля), берем последний день месяца
+        last_day = (next_month.replace(month=next_month.month + 1, day=1) - timedelta(days=1)).day
+        next_date = next_month.replace(day=last_day, hour=hour, minute=minute, second=0, microsecond=0)
+        return tz.localize(next_date)
 
 
 def get_auth_url() -> str:
@@ -663,34 +688,117 @@ async def check_notifications():
             now = get_current_time()
             
             for notif_id, notif in list(notifications.items()):
-                # Проверка для повторяющихся уведомлений
-                if notif.get('repeat_type') and notif.get('repeat_type') != 'no':
-                    repeat_type = notif.get('repeat_type')
-                    last_trigger = datetime.fromisoformat(notif.get('last_trigger', '2000-01-01T00:00:00'))
-                    if last_trigger.tzinfo is None:
-                        last_trigger = pytz.UTC.localize(last_trigger)
+                repeat_type = notif.get('repeat_type', 'no')
+                
+                # Для обычных уведомлений (без повторения)
+                if repeat_type == 'no' and notif.get('time'):
+                    notify_time = datetime.fromisoformat(notif['time'])
+                    if notify_time.tzinfo is None:
+                        tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+                        notify_time = tz.localize(notify_time)
+                    
+                    if now >= notify_time and not notif.get('notified', False):
+                        keyboard = InlineKeyboardMarkup(row_width=2)
+                        keyboard.add(
+                            InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{notif_id}"),
+                            InlineKeyboardButton("⏰ Напомнить через час", callback_data=f"snooze_{notif_id}_1")
+                        )
+                        
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"🔔 НАПОМИНАНИЕ!\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}",
+                            reply_markup=keyboard
+                        )
+                        
+                        notifications[notif_id]['notified'] = True
+                        save_data()
+                
+                # Для повторяющихся уведомлений
+                elif repeat_type != 'no':
+                    last_trigger = notif.get('last_trigger')
+                    if last_trigger:
+                        last_trigger_time = datetime.fromisoformat(last_trigger)
+                        if last_trigger_time.tzinfo is None:
+                            last_trigger_time = pytz.UTC.localize(last_trigger_time)
+                    else:
+                        last_trigger_time = None
                     
                     should_trigger = False
+                    next_time = None
                     
                     if repeat_type == 'every_day':
-                        today_trigger = now.replace(hour=notif.get('repeat_hour', 0), minute=notif.get('repeat_minute', 0), second=0, microsecond=0)
-                        if now >= today_trigger and last_trigger.date() < now.date():
-                            should_trigger = True
+                        # Ежедневное уведомление
+                        hour = notif.get('repeat_hour', 0)
+                        minute = notif.get('repeat_minute', 0)
+                        today_trigger = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                        
+                        # Если сегодня еще не отправляли
+                        if last_trigger_time is None or last_trigger_time.date() < now.date():
+                            if now >= today_trigger:
+                                should_trigger = True
+                                next_time = today_trigger + timedelta(days=1)
+                            else:
+                                next_time = today_trigger
+                        else:
+                            next_time = today_trigger + timedelta(days=1)
                     
                     elif repeat_type == 'every_week':
-                        today_trigger = now.replace(hour=notif.get('repeat_hour', 0), minute=notif.get('repeat_minute', 0), second=0, microsecond=0)
-                        if now >= today_trigger and last_trigger.date() < now.date() and now.weekday() == notif.get('repeat_weekday', 0):
-                            should_trigger = True
+                        # Еженедельное уведомление
+                        hour = notif.get('repeat_hour', 0)
+                        minute = notif.get('repeat_minute', 0)
+                        weekday = notif.get('repeat_weekday', 0)
+                        
+                        # Находим следующий нужный день недели
+                        days_ahead = (weekday - now.weekday()) % 7
+                        if days_ahead == 0:
+                            days_ahead = 7
+                        next_trigger = now.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=days_ahead)
+                        
+                        # Если еще не отправляли на этой неделе
+                        if last_trigger_time is None or last_trigger_time < next_trigger - timedelta(days=7):
+                            if now >= next_trigger - timedelta(days=7):
+                                should_trigger = True
+                                next_time = next_trigger
+                            else:
+                                next_time = next_trigger
+                        else:
+                            next_time = next_trigger
                     
                     elif repeat_type == 'every_month':
-                        today_trigger = now.replace(hour=notif.get('repeat_hour', 0), minute=notif.get('repeat_minute', 0), second=0, microsecond=0)
-                        if now >= today_trigger and last_trigger.date() < now.date() and now.day == notif.get('repeat_month_day', 1):
-                            should_trigger = True
+                        # Ежемесячное уведомление
+                        hour = notif.get('repeat_hour', 0)
+                        minute = notif.get('repeat_minute', 0)
+                        month_day = notif.get('repeat_month_day', 1)
+                        
+                        next_time = get_next_month_day(month_day, hour, minute, now)
+                        if next_time:
+                            # Если еще не отправляли в этом месяце
+                            if last_trigger_time is None or last_trigger_time.month != now.month or last_trigger_time.year != now.year:
+                                if now >= next_time:
+                                    should_trigger = True
+                                    next_time = get_next_month_day(month_day, hour, minute, next_time + timedelta(days=1))
                     
                     elif repeat_type == 'weekdays':
-                        today_trigger = now.replace(hour=notif.get('repeat_hour', 0), minute=notif.get('repeat_minute', 0), second=0, microsecond=0)
-                        if now >= today_trigger and last_trigger.date() < now.date() and now.weekday() in notif.get('weekdays_list', []):
-                            should_trigger = True
+                        # По дням недели
+                        hour = notif.get('repeat_hour', 0)
+                        minute = notif.get('repeat_minute', 0)
+                        weekdays_list = notif.get('weekdays_list', [])
+                        
+                        next_time = get_next_weekday(weekdays_list, hour, minute, now)
+                        if next_time:
+                            # Если сегодня есть в списке и еще не отправляли сегодня
+                            if now.weekday() in weekdays_list:
+                                today_trigger = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                                if last_trigger_time is None or last_trigger_time.date() < now.date():
+                                    if now >= today_trigger:
+                                        should_trigger = True
+                                        next_time = get_next_weekday(weekdays_list, hour, minute, today_trigger + timedelta(days=1))
+                                    else:
+                                        next_time = today_trigger
+                                else:
+                                    next_time = get_next_weekday(weekdays_list, hour, minute, now + timedelta(days=1))
+                            else:
+                                next_time = get_next_weekday(weekdays_list, hour, minute, now)
                     
                     if should_trigger:
                         keyboard = InlineKeyboardMarkup(row_width=2)
@@ -707,28 +815,13 @@ async def check_notifications():
                         
                         notif['last_trigger'] = now.isoformat()
                         save_data()
-                else:
-                    if notif.get('time'):
-                        notify_time = datetime.fromisoformat(notif['time'])
-                        if notify_time.tzinfo is None:
-                            tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
-                            notify_time = tz.localize(notify_time)
-                        
-                        if now >= notify_time and not notif.get('notified', False):
-                            keyboard = InlineKeyboardMarkup(row_width=2)
-                            keyboard.add(
-                                InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{notif_id}"),
-                                InlineKeyboardButton("⏰ Напомнить через час", callback_data=f"snooze_{notif_id}_1")
-                            )
-                            
-                            await bot.send_message(
-                                ADMIN_ID,
-                                f"🔔 НАПОМИНАНИЕ!\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}",
-                                reply_markup=keyboard
-                            )
-                            
-                            notifications[notif_id]['notified'] = True
-                            save_data()
+                    
+                    # Обновляем следующее время в уведомлении для отображения
+                    if next_time:
+                        tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+                        local_next = next_time.astimezone(tz) if next_time.tzinfo else next_time
+                        notif['next_time'] = local_next.isoformat()
+                        save_data()
                     
         await asyncio.sleep(30)
 
@@ -1394,7 +1487,8 @@ async def set_every_day_time(message: types.Message, state: FSMContext):
             'repeat_type': 'every_day',
             'repeat_hour': hour,
             'repeat_minute': minute,
-            'last_trigger': (first_time - timedelta(days=1)).isoformat()
+            'last_trigger': (first_time - timedelta(days=1)).isoformat(),
+            'next_time': first_time.isoformat()
         }
         
         save_data()
@@ -1404,7 +1498,10 @@ async def set_every_day_time(message: types.Message, state: FSMContext):
             f"📝 {data['text']}\n"
             f"📅 **Тип:** Ежедневное\n"
             f"⏰ **Время:** {hour:02d}:{minute:02d}\n"
-            f"🔁 Будет повторяться каждый день",
+            f"🔁 Будет повторяться каждый день\n\n"
+            f"ℹ️ Когда уведомление сработает, вы сможете:\n"
+            f"• Нажать «✅ Выполнено» - уведомление удалится\n"
+            f"• Нажать «⏰ Напомнить через час» - уведомление повторится через час",
             parse_mode='Markdown'
         )
         
@@ -1463,7 +1560,8 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
             'repeat_hour': hour,
             'repeat_minute': minute,
             'weekdays_list': weekdays_list,
-            'last_trigger': (first_time - timedelta(days=7)).isoformat()
+            'last_trigger': (first_time - timedelta(days=7)).isoformat(),
+            'next_time': first_time.isoformat()
         }
         
         save_data()
@@ -1474,7 +1572,10 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
             f"📅 **Тип:** По дням недели\n"
             f"📆 **Дни:** {', '.join(days_names)}\n"
             f"⏰ **Время:** {hour:02d}:{minute:02d}\n"
-            f"🔁 Будет повторяться каждую неделю",
+            f"🔁 Будет повторяться каждую неделю\n\n"
+            f"ℹ️ Когда уведомление сработает, вы сможете:\n"
+            f"• Нажать «✅ Выполнено» - уведомление удалится\n"
+            f"• Нажать «⏰ Напомнить через час» - уведомление повторится через час",
             parse_mode='Markdown'
         )
         
@@ -1505,7 +1606,8 @@ async def save_notification(message: types.Message, state: FSMContext, notify_ti
         'time': notify_time_utc.isoformat(),
         'created': get_current_time().isoformat(),
         'notified': False,
-        'num': next_num
+        'num': next_num,
+        'repeat_type': 'no'
     }
     
     save_data()
@@ -1606,6 +1708,7 @@ async def handle_complete(callback: types.CallbackQuery):
         notif_num = notifications[notif_id].get('num', notif_id)
         del notifications[notif_id]
         
+        # Перенумеровываем
         new_notifications = {}
         for i, (nid, notif) in enumerate(notifications.items(), 1):
             notif['num'] = i
@@ -1645,29 +1748,60 @@ async def handle_snooze(callback: types.CallbackQuery):
     hours = int(parts[2])
     
     if notif_id in notifications:
-        now = get_current_time()
-        new_time = now + timedelta(hours=hours)
-        
-        tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
-        if new_time.tzinfo is None:
-            new_time = tz.localize(new_time)
-        new_time_utc = new_time.astimezone(pytz.UTC)
-        
-        notifications[notif_id]['time'] = new_time_utc.isoformat()
-        notifications[notif_id]['notified'] = False
-        save_data()
-        
-        try:
-            await bot.delete_message(callback.from_user.id, callback.message.message_id)
-        except:
-            pass
-        
-        await bot.send_message(
-            callback.from_user.id,
-            f"⏰ **Уведомление отложено на {hours} час(ов)**\n"
-            f"Новое время: {new_time.strftime('%H:%M %d.%m.%Y')}",
-            parse_mode='Markdown'
-        )
+        # Получаем текущее время уведомления
+        if notifications[notif_id].get('repeat_type') and notifications[notif_id].get('repeat_type') != 'no':
+            # Для повторяющихся уведомлений откладываем на час
+            now = get_current_time()
+            new_time = now + timedelta(hours=hours)
+            
+            # Обновляем время уведомления
+            tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+            if new_time.tzinfo is None:
+                new_time = tz.localize(new_time)
+            new_time_utc = new_time.astimezone(pytz.UTC)
+            
+            notifications[notif_id]['time'] = new_time_utc.isoformat()
+            notifications[notif_id]['notified'] = False
+            # Не сбрасываем last_trigger, чтобы не нарушить цикл повторения
+            save_data()
+            
+            try:
+                await bot.delete_message(callback.from_user.id, callback.message.message_id)
+            except:
+                pass
+            
+            await bot.send_message(
+                callback.from_user.id,
+                f"⏰ **Уведомление отложено на {hours} час(ов)**\n"
+                f"Новое время: {new_time.strftime('%H:%M %d.%m.%Y')}",
+                parse_mode='Markdown'
+            )
+        else:
+            # Обычное уведомление
+            old_time = datetime.fromisoformat(notifications[notif_id]['time'])
+            if old_time.tzinfo is None:
+                old_time = pytz.UTC.localize(old_time)
+            
+            tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+            local_time = old_time.astimezone(tz)
+            new_local_time = local_time + timedelta(hours=hours)
+            new_utc_time = new_local_time.astimezone(pytz.UTC)
+            
+            notifications[notif_id]['time'] = new_utc_time.isoformat()
+            notifications[notif_id]['notified'] = False
+            save_data()
+            
+            try:
+                await bot.delete_message(callback.from_user.id, callback.message.message_id)
+            except:
+                pass
+            
+            await bot.send_message(
+                callback.from_user.id,
+                f"⏰ **Уведомление отложено на {hours} час(ов)**\n"
+                f"Новое время: {new_local_time.strftime('%H:%M %d.%m.%Y')}",
+                parse_mode='Markdown'
+            )
     
     await callback.answer()
 
@@ -1687,16 +1821,47 @@ async def list_notifications(message: types.Message, state: FSMContext):
         repeat_type = notif.get('repeat_type', 'no')
         
         repeat_text = ""
+        next_time_str = ""
+        
         if repeat_type == 'every_day':
-            repeat_text = f"\n🔄 **Повтор:** Каждый день в {notif.get('repeat_hour', 0):02d}:{notif.get('repeat_minute', 0):02d}"
+            hour = notif.get('repeat_hour', 0)
+            minute = notif.get('repeat_minute', 0)
+            repeat_text = f"\n🔄 **Повтор:** Каждый день в {hour:02d}:{minute:02d}"
+            if notif.get('next_time'):
+                next_time = datetime.fromisoformat(notif['next_time'])
+                if next_time.tzinfo is None:
+                    next_time = tz.localize(next_time)
+                next_time_str = f"\n⏰ **Следующее:** {next_time.strftime('%d.%m.%Y в %H:%M')}"
         elif repeat_type == 'every_week':
+            hour = notif.get('repeat_hour', 0)
+            minute = notif.get('repeat_minute', 0)
             weekday_name = WEEKDAYS_NAMES.get(notif.get('repeat_weekday', 0), '')
-            repeat_text = f"\n🔄 **Повтор:** Каждую неделю в {weekday_name} {notif.get('repeat_hour', 0):02d}:{notif.get('repeat_minute', 0):02d}"
+            repeat_text = f"\n🔄 **Повтор:** Каждую неделю в {weekday_name} {hour:02d}:{minute:02d}"
+            if notif.get('next_time'):
+                next_time = datetime.fromisoformat(notif['next_time'])
+                if next_time.tzinfo is None:
+                    next_time = tz.localize(next_time)
+                next_time_str = f"\n⏰ **Следующее:** {next_time.strftime('%d.%m.%Y в %H:%M')}"
         elif repeat_type == 'every_month':
-            repeat_text = f"\n🔄 **Повтор:** Каждый месяц {notif.get('repeat_month_day', 1)}-го числа в {notif.get('repeat_hour', 0):02d}:{notif.get('repeat_minute', 0):02d}"
+            hour = notif.get('repeat_hour', 0)
+            minute = notif.get('repeat_minute', 0)
+            month_day = notif.get('repeat_month_day', 1)
+            repeat_text = f"\n🔄 **Повтор:** Каждый месяц {month_day}-го числа в {hour:02d}:{minute:02d}"
+            if notif.get('next_time'):
+                next_time = datetime.fromisoformat(notif['next_time'])
+                if next_time.tzinfo is None:
+                    next_time = tz.localize(next_time)
+                next_time_str = f"\n⏰ **Следующее:** {next_time.strftime('%d.%m.%Y в %H:%M')}"
         elif repeat_type == 'weekdays':
+            hour = notif.get('repeat_hour', 0)
+            minute = notif.get('repeat_minute', 0)
             days_names = [WEEKDAYS_NAMES[d] for d in notif.get('weekdays_list', [])]
-            repeat_text = f"\n🔄 **Повтор:** По дням недели: {', '.join(days_names)} в {notif.get('repeat_hour', 0):02d}:{notif.get('repeat_minute', 0):02d}"
+            repeat_text = f"\n🔄 **Повтор:** По дням недели: {', '.join(days_names)} в {hour:02d}:{minute:02d}"
+            if notif.get('next_time'):
+                next_time = datetime.fromisoformat(notif['next_time'])
+                if next_time.tzinfo is None:
+                    next_time = tz.localize(next_time)
+                next_time_str = f"\n⏰ **Следующее:** {next_time.strftime('%d.%m.%Y в %H:%M')}"
         elif repeat_type == 'no' and notif.get('time'):
             notify_time = datetime.fromisoformat(notif['time'])
             if notify_time.tzinfo is None:
@@ -1747,7 +1912,7 @@ async def list_notifications(message: types.Message, state: FSMContext):
         text = (
             f"🔄 **Уведомление #{notif.get('num', notif_id)}**\n"
             f"📝 **Текст:** {notif['text']}\n"
-            f"📊 **Статус:** АКТИВНО{repeat_text}"
+            f"📊 **Статус:** АКТИВНО{repeat_text}{next_time_str}"
         )
         
         keyboard = InlineKeyboardMarkup(row_width=2)
