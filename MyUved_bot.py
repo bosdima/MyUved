@@ -21,9 +21,9 @@ from aiogram.utils import executor
 from dotenv import load_dotenv
 
 # Версия бота (обновляется при каждом изменении)
-BOT_VERSION = "2.3"
+BOT_VERSION = "2.4"
 BOT_VERSION_DATE = "07.04.2026"
-BOT_VERSION_TIME = "12:00"
+BOT_VERSION_TIME = "14:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -448,6 +448,17 @@ class SettingsStates(StatesGroup):
     waiting_for_backup_selection = State()
 
 
+class SnoozeStates(StatesGroup):
+    waiting_for_snooze_type = State()
+    waiting_for_hours = State()
+    waiting_for_days = State()
+    waiting_for_months = State()
+    waiting_for_specific_date = State()
+    waiting_for_weekdays = State()
+    waiting_for_weekday_time = State()
+    waiting_for_every_day_time = State()
+
+
 # Функция для автоматического удаления сообщений
 async def auto_delete_message(chat_id: int, message_id: int, delay: int = 180):
     """Автоматически удаляет сообщение через заданное время"""
@@ -692,7 +703,6 @@ async def check_notifications():
             
             for notif_id, notif in list(notifications.items()):
                 repeat_type = notif.get('repeat_type', 'no')
-                is_repeat = notif.get('is_repeat', False)
                 
                 # Для обычных уведомлений (без повторения)
                 if repeat_type == 'no' and notif.get('time'):
@@ -702,16 +712,26 @@ async def check_notifications():
                         notify_time = tz.localize(notify_time)
                     
                     if now >= notify_time and not notif.get('notified', False):
+                        # Проверяем, является ли это повторным уведомлением
+                        is_repeat = notif.get('is_repeat', False)
+                        repeat_count = notif.get('repeat_count', 0)
+                        
+                        if is_repeat:
+                            message_text = f"🔔 **ПОВТОРНОЕ НАПОМИНАНИЕ #{repeat_count + 1}**\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}"
+                        else:
+                            message_text = f"🔔 **НАПОМИНАНИЕ**\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}"
+                        
                         keyboard = InlineKeyboardMarkup(row_width=2)
                         keyboard.add(
                             InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{notif_id}"),
-                            InlineKeyboardButton("⏰ Напомнить через час", callback_data=f"snooze_{notif_id}_1")
+                            InlineKeyboardButton("⏰ Отложить уведомление", callback_data=f"snooze_{notif_id}")
                         )
                         
                         await bot.send_message(
                             ADMIN_ID,
-                            f"🔔 НАПОМИНАНИЕ!\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}",
-                            reply_markup=keyboard
+                            message_text,
+                            reply_markup=keyboard,
+                            parse_mode='Markdown'
                         )
                         
                         notifications[notif_id]['notified'] = True
@@ -804,29 +824,32 @@ async def check_notifications():
                             next_time = get_next_weekday(weekdays_list, hour, minute, now)
                     
                     if should_trigger:
-                        # Определяем, является ли это повторным уведомлением (через час)
-                        is_repeat_notification = notif.get('is_repeat', False)
+                        # Определяем, является ли это повторным уведомлением
+                        is_repeat = notif.get('is_repeat', False)
+                        repeat_count = notif.get('repeat_count', 0)
                         
-                        if is_repeat_notification:
-                            message_text = f"🔔 ПОВТОРНОЕ НАПОМИНАНИЕ! (через час)\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
+                        if is_repeat:
+                            message_text = f"🔔 **ПОВТОРНОЕ НАПОМИНАНИЕ #{repeat_count + 1}**\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
                             # Сбрасываем флаг повторения
                             notifications[notif_id]['is_repeat'] = False
                         else:
-                            message_text = f"🔔 НАПОМИНАНИЕ!\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
+                            message_text = f"🔔 **НАПОМИНАНИЕ**\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
                         
                         keyboard = InlineKeyboardMarkup(row_width=2)
                         keyboard.add(
                             InlineKeyboardButton("✅ Выполнено сегодня", callback_data=f"complete_today_{notif_id}"),
-                            InlineKeyboardButton("⏰ Напомнить через час", callback_data=f"snooze_{notif_id}_1")
+                            InlineKeyboardButton("⏰ Отложить уведомление", callback_data=f"snooze_{notif_id}")
                         )
                         
                         await bot.send_message(
                             ADMIN_ID,
                             message_text,
-                            reply_markup=keyboard
+                            reply_markup=keyboard,
+                            parse_mode='Markdown'
                         )
                         
                         notifications[notif_id]['last_trigger'] = now.isoformat()
+                        notifications[notif_id]['notified'] = False  # Не помечаем как выполненное
                         save_data()
                     
                     # Обновляем следующее время в уведомлении для отображения
@@ -1502,7 +1525,8 @@ async def set_every_day_time(message: types.Message, state: FSMContext):
             'repeat_minute': minute,
             'last_trigger': (first_time - timedelta(days=1)).isoformat(),
             'next_time': first_time.isoformat(),
-            'is_repeat': False
+            'is_repeat': False,
+            'repeat_count': 0
         }
         
         save_data()
@@ -1515,7 +1539,7 @@ async def set_every_day_time(message: types.Message, state: FSMContext):
             f"🔁 Будет повторяться каждый день\n\n"
             f"ℹ️ Когда уведомление сработает, вы сможете:\n"
             f"• Нажать «✅ Выполнено сегодня» - уведомление не повторится сегодня\n"
-            f"• Нажать «⏰ Напомнить через час» - уведомление повторится через час",
+            f"• Нажать «⏰ Отложить уведомление» - выбрать новое время для напоминания",
             parse_mode='Markdown'
         )
         
@@ -1576,7 +1600,8 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
             'weekdays_list': weekdays_list,
             'last_trigger': (first_time - timedelta(days=7)).isoformat(),
             'next_time': first_time.isoformat(),
-            'is_repeat': False
+            'is_repeat': False,
+            'repeat_count': 0
         }
         
         save_data()
@@ -1590,7 +1615,7 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
             f"🔁 Будет повторяться каждую неделю\n\n"
             f"ℹ️ Когда уведомление сработает, вы сможете:\n"
             f"• Нажать «✅ Выполнено сегодня» - уведомление не повторится сегодня\n"
-            f"• Нажать «⏰ Напомнить через час» - уведомление повторится через час",
+            f"• Нажать «⏰ Отложить уведомление» - выбрать новое время для напоминания",
             parse_mode='Markdown'
         )
         
@@ -1623,7 +1648,8 @@ async def save_notification(message: types.Message, state: FSMContext, notify_ti
         'notified': False,
         'num': next_num,
         'repeat_type': 'no',
-        'is_repeat': False
+        'is_repeat': False,
+        'repeat_count': 0
     }
     
     save_data()
@@ -1635,7 +1661,7 @@ async def save_notification(message: types.Message, state: FSMContext, notify_ti
         f"📅 Сработает: {notify_time.strftime('%d.%m.%Y в %H:%M')}\n\n"
         f"ℹ️ Когда уведомление сработает, вы сможете:\n"
         f"• Нажать «✅ Выполнено» - уведомление удалится\n"
-        f"• Нажать «⏰ Напомнить через час» - уведомление повторится через час",
+        f"• Нажать «⏰ Отложить уведомление» - выбрать новое время для напоминания",
         parse_mode='Markdown'
     )
     
@@ -1716,6 +1742,633 @@ async def set_specific_date(message: types.Message, state: FSMContext):
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
 
 
+# ========== ФУНКЦИИ ДЛЯ ОТЛОЖЕННЫХ УВЕДОМЛЕНИЙ ==========
+
+async def create_snooze_notification(original_notif_id: str, new_time: datetime, repeat_count: int):
+    """Создает отложенное уведомление на основе оригинального"""
+    original = notifications[original_notif_id]
+    
+    next_num = len(notifications) + 1
+    notif_id = str(next_num)
+    
+    tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+    if new_time.tzinfo is None:
+        new_time = tz.localize(new_time)
+    new_time_utc = new_time.astimezone(pytz.UTC)
+    
+    notifications[notif_id] = {
+        'text': original['text'],
+        'time': new_time_utc.isoformat(),
+        'created': get_current_time().isoformat(),
+        'notified': False,
+        'num': next_num,
+        'repeat_type': 'no',  # Отложенное уведомление всегда одноразовое
+        'is_repeat': True,  # Помечаем как повторное
+        'repeat_count': repeat_count + 1,  # Увеличиваем счетчик повторений
+        'original_id': original_notif_id  # Сохраняем ссылку на оригинал
+    }
+    
+    save_data()
+    return notif_id
+
+
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('snooze_'))
+async def snooze_notification_start(callback: types.CallbackQuery, state: FSMContext):
+    notif_id = callback.data.replace('snooze_', '')
+    
+    if notif_id not in notifications:
+        await callback.answer("Уведомление не найдено")
+        return
+    
+    await state.update_data(snooze_notif_id=notif_id)
+    
+    # Получаем текущий счетчик повторений
+    repeat_count = notifications[notif_id].get('repeat_count', 0)
+    
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("⏰ На 1 час", callback_data="snooze_time_1_hours"),
+        InlineKeyboardButton("⏰ На 3 часа", callback_data="snooze_time_3_hours"),
+        InlineKeyboardButton("⏰ На 6 часов", callback_data="snooze_time_6_hours"),
+        InlineKeyboardButton("⏰ На 12 часов", callback_data="snooze_time_12_hours"),
+        InlineKeyboardButton("📅 На 1 день", callback_data="snooze_time_1_days"),
+        InlineKeyboardButton("📅 На 2 дня", callback_data="snooze_time_2_days"),
+        InlineKeyboardButton("📅 На 3 дня", callback_data="snooze_time_3_days"),
+        InlineKeyboardButton("📅 На 7 дней", callback_data="snooze_time_7_days"),
+        InlineKeyboardButton("🎯 Свой вариант", callback_data="snooze_time_custom"),
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel_snooze")
+    )
+    
+    await bot.send_message(
+        callback.from_user.id,
+        f"⏰ **Отложить уведомление**\n\n"
+        f"📝 {notifications[notif_id]['text']}\n"
+        f"🔄 Повторений: {repeat_count}\n\n"
+        f"Выберите новое время для напоминания:",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("snooze_time_"), state="*")
+async def snooze_time_selected(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.replace("snooze_time_", "").split("_")
+    value = int(parts[0])
+    unit = parts[1]
+    
+    data = await state.get_data()
+    notif_id = data.get('snooze_notif_id')
+    
+    if not notif_id or notif_id not in notifications:
+        await callback.answer("Уведомление не найдено")
+        await state.finish()
+        return
+    
+    repeat_count = notifications[notif_id].get('repeat_count', 0)
+    
+    # Вычисляем новое время
+    now = get_current_time()
+    if unit == "hours":
+        new_time = now + timedelta(hours=value)
+    else:  # days
+        new_time = now + timedelta(days=value)
+    
+    # Удаляем оригинальное уведомление
+    original_num = notifications[notif_id].get('num', notif_id)
+    del notifications[notif_id]
+    
+    # Создаем отложенное уведомление
+    new_notif_id = await create_snooze_notification(notif_id, new_time, repeat_count)
+    
+    # Сохраняем изменения
+    save_data()
+    
+    # Перенумеровываем
+    new_notifications = {}
+    for i, (nid, notif) in enumerate(notifications.items(), 1):
+        notif['num'] = i
+        new_notifications[str(i)] = notif
+    notifications.clear()
+    notifications.update(new_notifications)
+    save_data()
+    
+    await bot.send_message(
+        callback.from_user.id,
+        f"⏰ **Уведомление отложено на {value} {unit}**\n\n"
+        f"📝 {notifications[str(len(notifications))]['text'] if notifications else ''}\n"
+        f"🔄 Повторение #{repeat_count + 1}\n"
+        f"🕐 Новое время: {new_time.strftime('%d.%m.%Y в %H:%M')}\n\n"
+        f"ℹ️ Уведомление будет повторяться каждый час, пока вы не отметите его как выполненное.",
+        parse_mode='Markdown'
+    )
+    
+    # Удаляем сообщение с кнопками отложенного уведомления
+    try:
+        await bot.delete_message(callback.from_user.id, callback.message.message_id)
+    except:
+        pass
+    
+    await state.finish()
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "snooze_time_custom", state="*")
+async def snooze_custom(callback: types.CallbackQuery, state: FSMContext):
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("⏰ В часах", callback_data="snooze_custom_hours"),
+        InlineKeyboardButton("📅 В днях", callback_data="snooze_custom_days"),
+        InlineKeyboardButton("📆 В месяцах", callback_data="snooze_custom_months"),
+        InlineKeyboardButton("🗓️ Конкретная дата", callback_data="snooze_custom_specific"),
+        InlineKeyboardButton("📅 Каждый день", callback_data="snooze_custom_every_day"),
+        InlineKeyboardButton("📆 По дням недели", callback_data="snooze_custom_weekdays"),
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel_snooze")
+    )
+    
+    await bot.send_message(
+        callback.from_user.id,
+        "🎯 **Выберите тип откладывания:**\n\n"
+        "Вы можете выбрать произвольное время для следующего напоминания:",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+    await SnoozeStates.waiting_for_snooze_type.set()
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("snooze_custom_"), state=SnoozeStates.waiting_for_snooze_type)
+async def snooze_custom_type(callback: types.CallbackQuery, state: FSMContext):
+    snooze_type = callback.data.replace("snooze_custom_", "")
+    await state.update_data(snooze_custom_type=snooze_type)
+    
+    if snooze_type == 'hours':
+        await send_with_auto_delete(
+            callback.from_user.id,
+            "⌛ **Введите количество часов:**\n\n"
+            "📝 Например: `5` или `24`\n\n"
+            "⏰ **У вас есть 3 минуты**\n\n"
+            "💡 Для отмены отправьте /cancel",
+            delay=180
+        )
+        await SnoozeStates.waiting_for_hours.set()
+    elif snooze_type == 'days':
+        await send_with_auto_delete(
+            callback.from_user.id,
+            "📅 **Введите количество дней:**\n\n"
+            "📝 Например: `7` или `30`\n\n"
+            "⏰ **У вас есть 3 минуты**\n\n"
+            "💡 Для отмены отправьте /cancel",
+            delay=180
+        )
+        await SnoozeStates.waiting_for_days.set()
+    elif snooze_type == 'months':
+        await send_with_auto_delete(
+            callback.from_user.id,
+            "📆 **Введите количество месяцев:**\n\n"
+            "📝 Например: `1` или `6`\n\n"
+            "⏰ **У вас есть 3 минуты**\n\n"
+            "💡 Для отмены отправьте /cancel",
+            delay=180
+        )
+        await SnoozeStates.waiting_for_months.set()
+    elif snooze_type == 'specific':
+        await send_with_auto_delete(
+            callback.from_user.id,
+            "🗓️ **Введите дату**\n\n"
+            "📝 **Поддерживаемые форматы:**\n"
+            "• `31.12.2025 23:59` - дата и время\n"
+            "• `31.12.2025` - только дата (время текущее)\n"
+            "• `06.04 9:00` - дата и время (текущий год)\n"
+            "• `31.12` - день и месяц (ближайший в будущем)\n\n"
+            "📌 Пример: `06.04 9:00` или `31.12.2025 23:59`\n\n"
+            "⏰ **У вас есть 3 минуты**\n\n"
+            "💡 Для отмены отправьте /cancel",
+            delay=180
+        )
+        await SnoozeStates.waiting_for_specific_date.set()
+    elif snooze_type == 'every_day':
+        await send_with_auto_delete(
+            callback.from_user.id,
+            "⏰ **Введите время для ежедневного уведомления**\n\n"
+            "📝 Формат: `ЧЧ:ММ`\n\n"
+            "📝 Примеры: `09:00` или `18:30`\n\n"
+            "⏰ **У вас есть 3 минуты**\n\n"
+            "💡 Для отмены отправьте /cancel",
+            delay=180
+        )
+        await SnoozeStates.waiting_for_every_day_time.set()
+    elif snooze_type == 'weekdays':
+        keyboard = InlineKeyboardMarkup(row_width=3)
+        for name, day in WEEKDAYS_BUTTONS:
+            keyboard.add(InlineKeyboardButton(name, callback_data=f"snooze_weekday_{day}"))
+        keyboard.add(InlineKeyboardButton("✅ Готово", callback_data="snooze_weekdays_done"))
+        
+        await bot.send_message(
+            callback.from_user.id,
+            "📅 **Выберите дни недели**\n\n"
+            "Нажимайте на дни, чтобы выбрать/отменить.\n"
+            "Когда закончите, нажмите «✅ Готово»\n\n"
+            "⏰ **У вас есть 3 минуты**",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        await state.update_data(snooze_selected_weekdays=[])
+        await SnoozeStates.waiting_for_weekdays.set()
+    
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("snooze_weekday_"), state=SnoozeStates.waiting_for_weekdays)
+async def snooze_select_weekday(callback: types.CallbackQuery, state: FSMContext):
+    day = int(callback.data.replace("snooze_weekday_", ""))
+    data = await state.get_data()
+    selected = data.get('snooze_selected_weekdays', [])
+    
+    if day in selected:
+        selected.remove(day)
+    else:
+        selected.append(day)
+    
+    await state.update_data(snooze_selected_weekdays=selected)
+    
+    keyboard = InlineKeyboardMarkup(row_width=3)
+    for name, d in WEEKDAYS_BUTTONS:
+        text = f"✅ {name}" if d in selected else name
+        keyboard.add(InlineKeyboardButton(text, callback_data=f"snooze_weekday_{d}"))
+    keyboard.add(InlineKeyboardButton("✅ Готово", callback_data="snooze_weekdays_done"))
+    
+    selected_names = [WEEKDAYS_NAMES[d] for d in sorted(selected)]
+    status_text = f"Выбрано: {', '.join(selected_names) if selected else 'ничего не выбрано'}"
+    
+    await bot.edit_message_text(
+        f"📅 **Выберите дни недели**\n\n{status_text}\n\n"
+        "Нажимайте на дни, чтобы выбрать/отменить.\n"
+        "Когда закончите, нажмите «✅ Готово»\n\n"
+        "⏰ **У вас есть 3 минуты**",
+        callback.from_user.id,
+        callback.message.message_id,
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "snooze_weekdays_done", state=SnoozeStates.waiting_for_weekdays)
+async def snooze_weekdays_done(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected = data.get('snooze_selected_weekdays', [])
+    
+    if not selected:
+        await callback.answer("❌ Выберите хотя бы один день недели!")
+        return
+    
+    await state.update_data(snooze_weekdays_list=selected)
+    
+    await send_with_auto_delete(
+        callback.from_user.id,
+        "⏰ **Введите время для уведомления**\n\n"
+        "📝 Формат: `ЧЧ:ММ`\n\n"
+        "📝 Примеры: `09:00` или `18:30`\n\n"
+        "⏰ **У вас есть 3 минуты**\n\n"
+        "💡 Для отмены отправьте /cancel",
+        delay=180
+    )
+    await SnoozeStates.waiting_for_weekday_time.set()
+    await callback.answer()
+
+
+@dp.message_handler(state=SnoozeStates.waiting_for_every_day_time)
+async def snooze_set_every_day_time(message: types.Message, state: FSMContext):
+    try:
+        match = re.match(r'^(\d{1,2}):(\d{2})$', message.text.strip())
+        if not match:
+            await message.reply(
+                "❌ **Ошибка!** Неверный формат времени.\n"
+                "Используйте формат `ЧЧ:ММ` (например: `09:00` или `18:30`)",
+                parse_mode='Markdown'
+            )
+            return
+        
+        hour, minute = map(int, match.groups())
+        if hour > 23 or minute > 59:
+            await message.reply("❌ **Ошибка!** Некорректное время (часы 0-23, минуты 0-59)", parse_mode='Markdown')
+            return
+        
+        data = await state.get_data()
+        notif_id = data.get('snooze_notif_id')
+        
+        if not notif_id or notif_id not in notifications:
+            await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+            await state.finish()
+            return
+        
+        repeat_count = notifications[notif_id].get('repeat_count', 0)
+        now = get_current_time()
+        tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+        first_time = tz.localize(datetime(now.year, now.month, now.day, hour, minute))
+        
+        if first_time <= now:
+            first_time += timedelta(days=1)
+        
+        original_num = notifications[notif_id].get('num', notif_id)
+        del notifications[notif_id]
+        
+        new_notif_id = await create_snooze_notification(notif_id, first_time, repeat_count)
+        
+        new_notifications = {}
+        for i, (nid, notif) in enumerate(notifications.items(), 1):
+            notif['num'] = i
+            new_notifications[str(i)] = notif
+        notifications.clear()
+        notifications.update(new_notifications)
+        save_data()
+        
+        await message.reply(
+            f"✅ **Уведомление отложено!**\n\n"
+            f"📝 {notifications[str(len(notifications))]['text'] if notifications else ''}\n"
+            f"🔄 Повторение #{repeat_count + 1}\n"
+            f"⏰ Новое время: каждый день в {hour:02d}:{minute:02d}\n\n"
+            f"ℹ️ Уведомление будет повторяться каждый час, пока вы не отметите его как выполненное.",
+            parse_mode='Markdown'
+        )
+        
+        await state.finish()
+    except Exception as e:
+        await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
+
+
+@dp.message_handler(state=SnoozeStates.waiting_for_weekday_time)
+async def snooze_set_weekday_time(message: types.Message, state: FSMContext):
+    try:
+        match = re.match(r'^(\d{1,2}):(\d{2})$', message.text.strip())
+        if not match:
+            await message.reply(
+                "❌ **Ошибка!** Неверный формат времени.\n"
+                "Используйте формат `ЧЧ:ММ` (например: `09:00` или `18:30`)",
+                parse_mode='Markdown'
+            )
+            return
+        
+        hour, minute = map(int, match.groups())
+        if hour > 23 or minute > 59:
+            await message.reply("❌ **Ошибка!** Некорректное время (часы 0-23, минуты 0-59)", parse_mode='Markdown')
+            return
+        
+        data = await state.get_data()
+        notif_id = data.get('snooze_notif_id')
+        weekdays_list = data.get('snooze_weekdays_list', [])
+        
+        if not notif_id or notif_id not in notifications:
+            await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+            await state.finish()
+            return
+        
+        first_time = get_next_weekday(weekdays_list, hour, minute)
+        
+        if not first_time:
+            await message.reply("❌ **Ошибка!** Не удалось определить дату", parse_mode='Markdown')
+            return
+        
+        repeat_count = notifications[notif_id].get('repeat_count', 0)
+        
+        original_num = notifications[notif_id].get('num', notif_id)
+        del notifications[notif_id]
+        
+        new_notif_id = await create_snooze_notification(notif_id, first_time, repeat_count)
+        
+        new_notifications = {}
+        for i, (nid, notif) in enumerate(notifications.items(), 1):
+            notif['num'] = i
+            new_notifications[str(i)] = notif
+        notifications.clear()
+        notifications.update(new_notifications)
+        save_data()
+        
+        days_names = [WEEKDAYS_NAMES[d] for d in sorted(weekdays_list)]
+        
+        await message.reply(
+            f"✅ **Уведомление отложено!**\n\n"
+            f"📝 {notifications[str(len(notifications))]['text'] if notifications else ''}\n"
+            f"🔄 Повторение #{repeat_count + 1}\n"
+            f"📆 Новое время: {', '.join(days_names)} в {hour:02d}:{minute:02d}\n\n"
+            f"ℹ️ Уведомление будет повторяться каждый час, пока вы не отметите его как выполненное.",
+            parse_mode='Markdown'
+        )
+        
+        await state.finish()
+    except Exception as e:
+        await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
+
+
+@dp.message_handler(state=SnoozeStates.waiting_for_hours)
+async def snooze_set_hours(message: types.Message, state: FSMContext):
+    try:
+        hours = int(message.text)
+        if hours <= 0:
+            await message.reply("❌ **Ошибка!** Введите положительное число часов.", parse_mode='Markdown')
+            return
+        
+        data = await state.get_data()
+        notif_id = data.get('snooze_notif_id')
+        
+        if not notif_id or notif_id not in notifications:
+            await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+            await state.finish()
+            return
+        
+        repeat_count = notifications[notif_id].get('repeat_count', 0)
+        new_time = get_current_time() + timedelta(hours=hours)
+        
+        original_num = notifications[notif_id].get('num', notif_id)
+        del notifications[notif_id]
+        
+        new_notif_id = await create_snooze_notification(notif_id, new_time, repeat_count)
+        
+        new_notifications = {}
+        for i, (nid, notif) in enumerate(notifications.items(), 1):
+            notif['num'] = i
+            new_notifications[str(i)] = notif
+        notifications.clear()
+        notifications.update(new_notifications)
+        save_data()
+        
+        await message.reply(
+            f"✅ **Уведомление отложено на {hours} час(ов)!**\n\n"
+            f"📝 {notifications[str(len(notifications))]['text'] if notifications else ''}\n"
+            f"🔄 Повторение #{repeat_count + 1}\n"
+            f"🕐 Новое время: {new_time.strftime('%d.%m.%Y в %H:%M')}\n\n"
+            f"ℹ️ Уведомление будет повторяться каждый час, пока вы не отметите его как выполненное.",
+            parse_mode='Markdown'
+        )
+        
+        await state.finish()
+    except ValueError:
+        await message.reply("❌ **Ошибка!** Введите корректное число часов.", parse_mode='Markdown')
+
+
+@dp.message_handler(state=SnoozeStates.waiting_for_days)
+async def snooze_set_days(message: types.Message, state: FSMContext):
+    try:
+        days = int(message.text)
+        if days <= 0:
+            await message.reply("❌ **Ошибка!** Введите положительное число дней.", parse_mode='Markdown')
+            return
+        
+        data = await state.get_data()
+        notif_id = data.get('snooze_notif_id')
+        
+        if not notif_id or notif_id not in notifications:
+            await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+            await state.finish()
+            return
+        
+        repeat_count = notifications[notif_id].get('repeat_count', 0)
+        new_time = get_current_time() + timedelta(days=days)
+        
+        original_num = notifications[notif_id].get('num', notif_id)
+        del notifications[notif_id]
+        
+        new_notif_id = await create_snooze_notification(notif_id, new_time, repeat_count)
+        
+        new_notifications = {}
+        for i, (nid, notif) in enumerate(notifications.items(), 1):
+            notif['num'] = i
+            new_notifications[str(i)] = notif
+        notifications.clear()
+        notifications.update(new_notifications)
+        save_data()
+        
+        await message.reply(
+            f"✅ **Уведомление отложено на {days} день(дней)!**\n\n"
+            f"📝 {notifications[str(len(notifications))]['text'] if notifications else ''}\n"
+            f"🔄 Повторение #{repeat_count + 1}\n"
+            f"🕐 Новое время: {new_time.strftime('%d.%m.%Y в %H:%M')}\n\n"
+            f"ℹ️ Уведомление будет повторяться каждый час, пока вы не отметите его как выполненное.",
+            parse_mode='Markdown'
+        )
+        
+        await state.finish()
+    except ValueError:
+        await message.reply("❌ **Ошибка!** Введите корректное число дней.", parse_mode='Markdown')
+
+
+@dp.message_handler(state=SnoozeStates.waiting_for_months)
+async def snooze_set_months(message: types.Message, state: FSMContext):
+    try:
+        months = int(message.text)
+        if months <= 0:
+            await message.reply("❌ **Ошибка!** Введите положительное число месяцев.", parse_mode='Markdown')
+            return
+        
+        data = await state.get_data()
+        notif_id = data.get('snooze_notif_id')
+        
+        if not notif_id or notif_id not in notifications:
+            await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+            await state.finish()
+            return
+        
+        repeat_count = notifications[notif_id].get('repeat_count', 0)
+        days = months * 30
+        new_time = get_current_time() + timedelta(days=days)
+        
+        original_num = notifications[notif_id].get('num', notif_id)
+        del notifications[notif_id]
+        
+        new_notif_id = await create_snooze_notification(notif_id, new_time, repeat_count)
+        
+        new_notifications = {}
+        for i, (nid, notif) in enumerate(notifications.items(), 1):
+            notif['num'] = i
+            new_notifications[str(i)] = notif
+        notifications.clear()
+        notifications.update(new_notifications)
+        save_data()
+        
+        await message.reply(
+            f"✅ **Уведомление отложено на {months} месяц(ев)!**\n\n"
+            f"📝 {notifications[str(len(notifications))]['text'] if notifications else ''}\n"
+            f"🔄 Повторение #{repeat_count + 1}\n"
+            f"🕐 Новое время: {new_time.strftime('%d.%m.%Y в %H:%M')}\n\n"
+            f"ℹ️ Уведомление будет повторяться каждый час, пока вы не отметите его как выполненное.",
+            parse_mode='Markdown'
+        )
+        
+        await state.finish()
+    except ValueError:
+        await message.reply("❌ **Ошибка!** Введите корректное число месяцев.", parse_mode='Markdown')
+
+
+@dp.message_handler(state=SnoozeStates.waiting_for_specific_date)
+async def snooze_set_specific_date(message: types.Message, state: FSMContext):
+    try:
+        notify_time = parse_date(message.text)
+        
+        if notify_time is None:
+            await message.reply(
+                "❌ **Ошибка!** Неверный формат даты.\n\n"
+                "📝 **Поддерживаемые форматы:**\n"
+                "• `31.12.2025 23:59` - дата и время\n"
+                "• `31.12.2025` - только дата (время текущее)\n"
+                "• `06.04 9:00` - дата и время (текущий год)\n"
+                "• `31.12` - день и месяц (ближайший в будущем)\n\n"
+                "📌 Пример: `06.04 9:00` или `31.12.2025 23:59`",
+                parse_mode='Markdown'
+            )
+            return
+        
+        if notify_time <= get_current_time():
+            await message.reply("❌ **Ошибка!** Дата должна быть в будущем!", parse_mode='Markdown')
+            return
+        
+        data = await state.get_data()
+        notif_id = data.get('snooze_notif_id')
+        
+        if not notif_id or notif_id not in notifications:
+            await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+            await state.finish()
+            return
+        
+        repeat_count = notifications[notif_id].get('repeat_count', 0)
+        
+        original_num = notifications[notif_id].get('num', notif_id)
+        del notifications[notif_id]
+        
+        new_notif_id = await create_snooze_notification(notif_id, notify_time, repeat_count)
+        
+        new_notifications = {}
+        for i, (nid, notif) in enumerate(notifications.items(), 1):
+            notif['num'] = i
+            new_notifications[str(i)] = notif
+        notifications.clear()
+        notifications.update(new_notifications)
+        save_data()
+        
+        await message.reply(
+            f"✅ **Уведомление отложено!**\n\n"
+            f"📝 {notifications[str(len(notifications))]['text'] if notifications else ''}\n"
+            f"🔄 Повторение #{repeat_count + 1}\n"
+            f"🕐 Новое время: {notify_time.strftime('%d.%m.%Y в %H:%M')}\n\n"
+            f"ℹ️ Уведомление будет повторяться каждый час, пока вы не отметите его как выполненное.",
+            parse_mode='Markdown'
+        )
+        
+        await state.finish()
+    except Exception as e:
+        await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
+
+
+@dp.callback_query_handler(lambda c: c.data == "cancel_snooze", state="*")
+async def cancel_snooze(callback: types.CallbackQuery, state: FSMContext):
+    await state.finish()
+    await bot.send_message(callback.from_user.id, "✅ **Откладывание отменено**", parse_mode='Markdown')
+    await callback.answer()
+
+
+# ========== КОНЕЦ ФУНКЦИЙ ДЛЯ ОТЛОЖЕННЫХ УВЕДОМЛЕНИЙ ==========
+
+
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('complete_'))
 async def handle_complete(callback: types.CallbackQuery):
     notif_id = callback.data.replace('complete_', '')
@@ -1764,7 +2417,9 @@ async def handle_complete_today(callback: types.CallbackQuery):
         # Обновляем last_trigger на сегодня, чтобы сегодня больше не повторялось
         now = get_current_time()
         notif['last_trigger'] = now.isoformat()
-        notif['notified'] = False  # Не помечаем как выполненное, просто обновляем время последнего срабатывания
+        notif['notified'] = False
+        notif['is_repeat'] = False
+        notif['repeat_count'] = 0  # Сбрасываем счетчик повторений
         save_data()
         
         try:
@@ -1801,7 +2456,8 @@ async def handle_complete_today(callback: types.CallbackQuery):
             callback.from_user.id,
             f"✅ **Уведомление #{notif_num} отмечено как выполненное на сегодня!**\n\n"
             f"📝 {notif['text']}\n"
-            f"⏰ Следующее срабатывание: {next_time_str}",
+            f"⏰ Следующее срабатывание: {next_time_str}\n\n"
+            f"🔄 Счетчик повторений сброшен",
             parse_mode='Markdown'
         )
         
@@ -1809,76 +2465,6 @@ async def handle_complete_today(callback: types.CallbackQuery):
             await create_backup(ADMIN_ID)
     else:
         await callback.answer("Уведомление уже обработано")
-    
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('snooze_'))
-async def handle_snooze(callback: types.CallbackQuery):
-    parts = callback.data.split('_')
-    if len(parts) < 3:
-        await callback.answer("Ошибка")
-        return
-    
-    notif_id = parts[1]
-    hours = int(parts[2])
-    
-    if notif_id in notifications:
-        # Для повторяющихся уведомлений
-        if notifications[notif_id].get('repeat_type') and notifications[notif_id].get('repeat_type') != 'no':
-            # Устанавливаем флаг, что это повторное уведомление
-            notifications[notif_id]['is_repeat'] = True
-            
-            now = get_current_time()
-            new_time = now + timedelta(hours=hours)
-            
-            tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
-            if new_time.tzinfo is None:
-                new_time = tz.localize(new_time)
-            new_time_utc = new_time.astimezone(pytz.UTC)
-            
-            notifications[notif_id]['time'] = new_time_utc.isoformat()
-            notifications[notif_id]['notified'] = False
-            save_data()
-            
-            try:
-                await bot.delete_message(callback.from_user.id, callback.message.message_id)
-            except:
-                pass
-            
-            await bot.send_message(
-                callback.from_user.id,
-                f"⏰ **Уведомление отложено на {hours} час(ов)**\n"
-                f"Новое время: {new_time.strftime('%H:%M %d.%m.%Y')}\n\n"
-                f"ℹ️ Это повторное уведомление",
-                parse_mode='Markdown'
-            )
-        else:
-            # Обычное уведомление
-            old_time = datetime.fromisoformat(notifications[notif_id]['time'])
-            if old_time.tzinfo is None:
-                old_time = pytz.UTC.localize(old_time)
-            
-            tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
-            local_time = old_time.astimezone(tz)
-            new_local_time = local_time + timedelta(hours=hours)
-            new_utc_time = new_local_time.astimezone(pytz.UTC)
-            
-            notifications[notif_id]['time'] = new_utc_time.isoformat()
-            notifications[notif_id]['notified'] = False
-            save_data()
-            
-            try:
-                await bot.delete_message(callback.from_user.id, callback.message.message_id)
-            except:
-                pass
-            
-            await bot.send_message(
-                callback.from_user.id,
-                f"⏰ **Уведомление отложено на {hours} час(ов)**\n"
-                f"Новое время: {new_local_time.strftime('%H:%M %d.%m.%Y')}",
-                parse_mode='Markdown'
-            )
     
     await callback.answer()
 
@@ -1896,6 +2482,8 @@ async def list_notifications(message: types.Message, state: FSMContext):
     
     for notif_id, notif in sorted_notifs:
         repeat_type = notif.get('repeat_type', 'no')
+        is_repeat = notif.get('is_repeat', False)
+        repeat_count = notif.get('repeat_count', 0)
         
         repeat_text = ""
         next_time_str = ""
@@ -1970,8 +2558,12 @@ async def list_notifications(message: types.Message, state: FSMContext):
                 else:
                     time_left = f"\n📅 **Осталось:** {minutes} мин."
             
+            repeat_info = ""
+            if is_repeat:
+                repeat_info = f"\n🔄 **Повторное напоминание #{repeat_count}**"
+            
             text = (
-                f"{status_emoji} **Уведомление #{notif.get('num', notif_id)}**\n"
+                f"{status_emoji} **Уведомление #{notif.get('num', notif_id)}**{repeat_info}\n"
                 f"📝 **Текст:** {notif['text']}\n"
                 f"⏰ **Время:** {local_time.strftime('%d.%m.%Y в %H:%M')}\n"
                 f"📊 **Статус:** {status}{time_left}"
@@ -1986,8 +2578,12 @@ async def list_notifications(message: types.Message, state: FSMContext):
             await message.reply(text, reply_markup=keyboard, parse_mode='Markdown')
             continue
         
+        repeat_info = ""
+        if is_repeat:
+            repeat_info = f"\n🔄 **Повторное напоминание #{repeat_count}**"
+        
         text = (
-            f"🔄 **Уведомление #{notif.get('num', notif_id)}**\n"
+            f"🔄 **Уведомление #{notif.get('num', notif_id)}**{repeat_info}\n"
             f"📝 **Текст:** {notif['text']}\n"
             f"📊 **Статус:** АКТИВНО{repeat_text}{next_time_str}"
         )
