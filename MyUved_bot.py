@@ -20,9 +20,10 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeybo
 from aiogram.utils import executor
 from dotenv import load_dotenv
 
-# Версия бота
-BOT_VERSION = "2.1"
-BOT_VERSION_DATE = "05.04.2026"
+# Версия бота (обновляется при каждом изменении)
+BOT_VERSION = "2.3"
+BOT_VERSION_DATE = "07.04.2026"
+BOT_VERSION_TIME = "12:00"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -576,7 +577,9 @@ async def create_backup(user_id: int = None) -> tuple:
             'notifications': notifications,
             'config': config,
             'timestamp': timestamp,
-            'version': BOT_VERSION
+            'version': BOT_VERSION,
+            'version_date': BOT_VERSION_DATE,
+            'version_time': BOT_VERSION_TIME
         }
         
         with open(backup_file, 'w', encoding='utf-8') as f:
@@ -689,6 +692,7 @@ async def check_notifications():
             
             for notif_id, notif in list(notifications.items()):
                 repeat_type = notif.get('repeat_type', 'no')
+                is_repeat = notif.get('is_repeat', False)
                 
                 # Для обычных уведомлений (без повторения)
                 if repeat_type == 'no' and notif.get('time'):
@@ -784,36 +788,45 @@ async def check_notifications():
                         minute = notif.get('repeat_minute', 0)
                         weekdays_list = notif.get('weekdays_list', [])
                         
-                        next_time = get_next_weekday(weekdays_list, hour, minute, now)
-                        if next_time:
-                            # Если сегодня есть в списке и еще не отправляли сегодня
-                            if now.weekday() in weekdays_list:
-                                today_trigger = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                                if last_trigger_time is None or last_trigger_time.date() < now.date():
-                                    if now >= today_trigger:
-                                        should_trigger = True
-                                        next_time = get_next_weekday(weekdays_list, hour, minute, today_trigger + timedelta(days=1))
-                                    else:
-                                        next_time = today_trigger
+                        # Проверяем, нужно ли сегодня отправить
+                        if now.weekday() in weekdays_list:
+                            today_trigger = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                            # Если сегодня еще не отправляли
+                            if last_trigger_time is None or last_trigger_time.date() < now.date():
+                                if now >= today_trigger:
+                                    should_trigger = True
+                                    next_time = get_next_weekday(weekdays_list, hour, minute, today_trigger + timedelta(days=1))
                                 else:
-                                    next_time = get_next_weekday(weekdays_list, hour, minute, now + timedelta(days=1))
+                                    next_time = today_trigger
                             else:
-                                next_time = get_next_weekday(weekdays_list, hour, minute, now)
+                                next_time = get_next_weekday(weekdays_list, hour, minute, now + timedelta(days=1))
+                        else:
+                            next_time = get_next_weekday(weekdays_list, hour, minute, now)
                     
                     if should_trigger:
+                        # Определяем, является ли это повторным уведомлением (через час)
+                        is_repeat_notification = notif.get('is_repeat', False)
+                        
+                        if is_repeat_notification:
+                            message_text = f"🔔 ПОВТОРНОЕ НАПОМИНАНИЕ! (через час)\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
+                            # Сбрасываем флаг повторения
+                            notifications[notif_id]['is_repeat'] = False
+                        else:
+                            message_text = f"🔔 НАПОМИНАНИЕ!\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
+                        
                         keyboard = InlineKeyboardMarkup(row_width=2)
                         keyboard.add(
-                            InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{notif_id}"),
+                            InlineKeyboardButton("✅ Выполнено сегодня", callback_data=f"complete_today_{notif_id}"),
                             InlineKeyboardButton("⏰ Напомнить через час", callback_data=f"snooze_{notif_id}_1")
                         )
                         
                         await bot.send_message(
                             ADMIN_ID,
-                            f"🔔 НАПОМИНАНИЕ!\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}",
+                            message_text,
                             reply_markup=keyboard
                         )
                         
-                        notif['last_trigger'] = now.isoformat()
+                        notifications[notif_id]['last_trigger'] = now.isoformat()
                         save_data()
                     
                     # Обновляем следующее время в уведомлении для отображения
@@ -888,7 +901,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
                 )
                 await message.reply(
                     f"✅ **Доступ к Яндекс.Диску имеется!**\n\n"
-                    f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE})\n"
+                    f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE} {BOT_VERSION_TIME})\n"
                     f"🕐 **Часовой пояс:** {config.get('timezone', 'Europe/Moscow')}{backup_text}",
                     reply_markup=keyboard,
                     parse_mode='Markdown'
@@ -896,7 +909,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             else:
                 await message.reply(
                     f"✅ **Доступ к Яндекс.Диску имеется!**\n\n"
-                    f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE})\n"
+                    f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE} {BOT_VERSION_TIME})\n"
                     f"🕐 **Часовой пояс:** {config.get('timezone', 'Europe/Moscow')}",
                     parse_mode='Markdown'
                 )
@@ -910,7 +923,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
                 f"⚠️ **Нет доступа к Яндекс.Диску!**\n\n"
                 f"Причина: {access_message}\n\n"
                 f"Для работы бэкапов необходимо авторизоваться.\n\n"
-                f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE})",
+                f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE} {BOT_VERSION_TIME})",
                 reply_markup=keyboard,
                 parse_mode='Markdown'
             )
@@ -922,7 +935,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         
         await message.reply(
             f"👋 **Добро пожаловать!**\n\n"
-            f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE})\n\n"
+            f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE} {BOT_VERSION_TIME})\n\n"
             f"⚠️ **Нет доступа к Яндекс.Диску!**\n\n"
             f"Для работы бэкапов необходимо авторизоваться.\n\n"
             f"Нажмите кнопку ниже для авторизации:",
@@ -1488,7 +1501,8 @@ async def set_every_day_time(message: types.Message, state: FSMContext):
             'repeat_hour': hour,
             'repeat_minute': minute,
             'last_trigger': (first_time - timedelta(days=1)).isoformat(),
-            'next_time': first_time.isoformat()
+            'next_time': first_time.isoformat(),
+            'is_repeat': False
         }
         
         save_data()
@@ -1500,7 +1514,7 @@ async def set_every_day_time(message: types.Message, state: FSMContext):
             f"⏰ **Время:** {hour:02d}:{minute:02d}\n"
             f"🔁 Будет повторяться каждый день\n\n"
             f"ℹ️ Когда уведомление сработает, вы сможете:\n"
-            f"• Нажать «✅ Выполнено» - уведомление удалится\n"
+            f"• Нажать «✅ Выполнено сегодня» - уведомление не повторится сегодня\n"
             f"• Нажать «⏰ Напомнить через час» - уведомление повторится через час",
             parse_mode='Markdown'
         )
@@ -1561,7 +1575,8 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
             'repeat_minute': minute,
             'weekdays_list': weekdays_list,
             'last_trigger': (first_time - timedelta(days=7)).isoformat(),
-            'next_time': first_time.isoformat()
+            'next_time': first_time.isoformat(),
+            'is_repeat': False
         }
         
         save_data()
@@ -1574,7 +1589,7 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
             f"⏰ **Время:** {hour:02d}:{minute:02d}\n"
             f"🔁 Будет повторяться каждую неделю\n\n"
             f"ℹ️ Когда уведомление сработает, вы сможете:\n"
-            f"• Нажать «✅ Выполнено» - уведомление удалится\n"
+            f"• Нажать «✅ Выполнено сегодня» - уведомление не повторится сегодня\n"
             f"• Нажать «⏰ Напомнить через час» - уведомление повторится через час",
             parse_mode='Markdown'
         )
@@ -1607,7 +1622,8 @@ async def save_notification(message: types.Message, state: FSMContext, notify_ti
         'created': get_current_time().isoformat(),
         'notified': False,
         'num': next_num,
-        'repeat_type': 'no'
+        'repeat_type': 'no',
+        'is_repeat': False
     }
     
     save_data()
@@ -1737,6 +1753,66 @@ async def handle_complete(callback: types.CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('complete_today_'))
+async def handle_complete_today(callback: types.CallbackQuery):
+    notif_id = callback.data.replace('complete_today_', '')
+    
+    if notif_id in notifications:
+        notif = notifications[notif_id]
+        notif_num = notif.get('num', notif_id)
+        
+        # Обновляем last_trigger на сегодня, чтобы сегодня больше не повторялось
+        now = get_current_time()
+        notif['last_trigger'] = now.isoformat()
+        notif['notified'] = False  # Не помечаем как выполненное, просто обновляем время последнего срабатывания
+        save_data()
+        
+        try:
+            await bot.delete_message(callback.from_user.id, callback.message.message_id)
+        except:
+            pass
+        
+        # Определяем следующее время
+        repeat_type = notif.get('repeat_type', 'weekdays')
+        hour = notif.get('repeat_hour', 0)
+        minute = notif.get('repeat_minute', 0)
+        
+        if repeat_type == 'weekdays':
+            weekdays_list = notif.get('weekdays_list', [])
+            next_time = get_next_weekday(weekdays_list, hour, minute, now)
+        elif repeat_type == 'every_day':
+            tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+            next_time = tz.localize(datetime(now.year, now.month, now.day, hour, minute))
+            if next_time <= now:
+                next_time += timedelta(days=1)
+        else:
+            next_time = None
+        
+        if next_time:
+            tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+            local_next = next_time.astimezone(tz) if next_time.tzinfo else next_time
+            notif['next_time'] = local_next.isoformat()
+            save_data()
+            next_time_str = local_next.strftime('%d.%m.%Y в %H:%M')
+        else:
+            next_time_str = "не определено"
+        
+        await bot.send_message(
+            callback.from_user.id,
+            f"✅ **Уведомление #{notif_num} отмечено как выполненное на сегодня!**\n\n"
+            f"📝 {notif['text']}\n"
+            f"⏰ Следующее срабатывание: {next_time_str}",
+            parse_mode='Markdown'
+        )
+        
+        if ADMIN_ID:
+            await create_backup(ADMIN_ID)
+    else:
+        await callback.answer("Уведомление уже обработано")
+    
+    await callback.answer()
+
+
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('snooze_'))
 async def handle_snooze(callback: types.CallbackQuery):
     parts = callback.data.split('_')
@@ -1748,13 +1824,14 @@ async def handle_snooze(callback: types.CallbackQuery):
     hours = int(parts[2])
     
     if notif_id in notifications:
-        # Получаем текущее время уведомления
+        # Для повторяющихся уведомлений
         if notifications[notif_id].get('repeat_type') and notifications[notif_id].get('repeat_type') != 'no':
-            # Для повторяющихся уведомлений откладываем на час
+            # Устанавливаем флаг, что это повторное уведомление
+            notifications[notif_id]['is_repeat'] = True
+            
             now = get_current_time()
             new_time = now + timedelta(hours=hours)
             
-            # Обновляем время уведомления
             tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
             if new_time.tzinfo is None:
                 new_time = tz.localize(new_time)
@@ -1762,7 +1839,6 @@ async def handle_snooze(callback: types.CallbackQuery):
             
             notifications[notif_id]['time'] = new_time_utc.isoformat()
             notifications[notif_id]['notified'] = False
-            # Не сбрасываем last_trigger, чтобы не нарушить цикл повторения
             save_data()
             
             try:
@@ -1773,7 +1849,8 @@ async def handle_snooze(callback: types.CallbackQuery):
             await bot.send_message(
                 callback.from_user.id,
                 f"⏰ **Уведомление отложено на {hours} час(ов)**\n"
-                f"Новое время: {new_time.strftime('%H:%M %d.%m.%Y')}",
+                f"Новое время: {new_time.strftime('%H:%M %d.%m.%Y')}\n\n"
+                f"ℹ️ Это повторное уведомление",
                 parse_mode='Markdown'
             )
         else:
@@ -2489,7 +2566,7 @@ async def show_info(callback: types.CallbackQuery):
     info = f"""
 📊 **СТАТИСТИКА**
 
-🤖 **Версия:** v{BOT_VERSION} ({BOT_VERSION_DATE})
+🤖 **Версия:** v{BOT_VERSION} ({BOT_VERSION_DATE} {BOT_VERSION_TIME})
 
 📝 **Уведомлений:** `{len(notifications)}`
 💾 **Максимум бэкапов:** `{config.get('max_backups', 5)}`
@@ -2518,7 +2595,8 @@ async def show_version(message: types.Message):
     await message.reply(
         f"🤖 **Бот для уведомлений**\n"
         f"📌 **Версия:** v{BOT_VERSION}\n"
-        f"📅 **Дата:** {BOT_VERSION_DATE}",
+        f"📅 **Дата:** {BOT_VERSION_DATE}\n"
+        f"🕐 **Время сборки:** {BOT_VERSION_TIME}",
         parse_mode='Markdown'
     )
 
@@ -2548,7 +2626,7 @@ async def on_startup(dp):
     save_data()
     
     print(f"\n{'='*50}")
-    print(f"🤖 БОТ ДЛЯ УВЕДОМЛЕНИЙ v{BOT_VERSION} ({BOT_VERSION_DATE})")
+    print(f"🤖 БОТ ДЛЯ УВЕДОМЛЕНИЙ v{BOT_VERSION} ({BOT_VERSION_DATE} {BOT_VERSION_TIME})")
     print(f"{'='*50}")
     
     if ADMIN_ID and get_user_token(ADMIN_ID):
