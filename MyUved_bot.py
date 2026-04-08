@@ -33,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "2.19"
+BOT_VERSION = "2.20"
 BOT_VERSION_DATE = "08.04.2026"
-BOT_VERSION_TIME = "18:00"
+BOT_VERSION_TIME = "18:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -2794,40 +2794,6 @@ async def settings_menu_handler(message: types.Message, state: FSMContext):
 
 # ========== ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ ДЛЯ РЕДАКТИРОВАНИЯ ==========
 
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_'), state='*')
-async def edit_notification_start(callback: types.CallbackQuery, state: FSMContext):
-    """Обработчик для кнопки 'Изменить' (первое меню)"""
-    notif_id = callback.data.replace('edit_', '')
-    logger.info(f"Пользователь {callback.from_user.id} начал редактирование уведомления {notif_id}")
-    
-    if notif_id not in notifications:
-        logger.warning(f"Уведомление {notif_id} не найдено при попытке редактирования")
-        await callback.answer("Уведомление не найдено")
-        return
-    
-    # Сохраняем ID уведомления в FSM состояние
-    await state.update_data(edit_id=notif_id)
-    logger.info(f"Сохранен edit_id={notif_id} в FSM для пользователя {callback.from_user.id}")
-    
-    # Создаем кнопки с передачей edit_id в callback_data
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("✏️ Изменить текст", callback_data=f"edit_text_{notif_id}"),
-        InlineKeyboardButton("⏰ Изменить время", callback_data=f"edit_time_{notif_id}")
-    )
-    keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit"))
-    
-    await bot.send_message(
-        callback.from_user.id,
-        f"✏️ **Что хотите изменить в уведомлении #{notifications[notif_id].get('num', notif_id)}?**\n\n"
-        f"📝 Текст: {notifications[notif_id]['text'][:50]}...\n\n"
-        f"⏰ **У вас есть 3 минуты** на выбор действия",
-        reply_markup=keyboard,
-        parse_mode='Markdown'
-    )
-    await callback.answer()
-
-
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_text_'), state='*')
 async def edit_notification_text_handler(callback: types.CallbackQuery, state: FSMContext):
     """Обработчик для кнопки 'Изменить текст'"""
@@ -3639,19 +3605,6 @@ async def on_startup(dp):
             'repeat_minute': 0,
             'last_trigger': (test_time_3 - timedelta(days=1)).isoformat(),
             'next_time': test_time_3.isoformat(),
-            'is_repeat': False,
-            'repeat_count': 0
-        }
-        
-        # Тестовое уведомление #4 - для проверки редактирования
-        test_time_4 = tz.localize(datetime(now.year, now.month, now.day + 2, 15, 30))
-        notifications["4"] = {
-            'text': 'Тестовое уведомление для проверки редактирования',
-            'time': test_time_4.isoformat(),
-            'created': now.isoformat(),
-            'notified': False,
-            'num': 4,
-            'repeat_type': 'no',
             'is_repeat': False,
             'repeat_count': 0
         }
