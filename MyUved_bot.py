@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -20,10 +21,21 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeybo
 from aiogram.utils import executor
 from dotenv import load_dotenv
 
+# Настройка логирования
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot_debug.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # Версия бота
-BOT_VERSION = "2.8"
+BOT_VERSION = "2.9"
 BOT_VERSION_DATE = "08.04.2026"
-BOT_VERSION_TIME = "10:30"
+BOT_VERSION_TIME = "11:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -36,7 +48,7 @@ REDIRECT_URI = os.getenv('REDIRECT_URI', 'https://oauth.yandex.ru/verification_c
 
 # Проверка наличия всех необходимых переменных
 if not all([BOT_TOKEN, CLIENT_ID, CLIENT_SECRET]):
-    print("❌ Ошибка: Не все переменные окружения заданы!")
+    logger.error("❌ Ошибка: Не все переменные окружения заданы!")
     exit(1)
 
 # Инициализация бота с MemoryStorage для FSM
@@ -225,10 +237,10 @@ async def get_access_token(auth_code: str) -> Optional[str]:
                     return result.get("access_token")
                 else:
                     error_text = await response.text()
-                    print(f"Ошибка получения токена: {response.status} - {error_text}")
+                    logger.error(f"Ошибка получения токена: {response.status} - {error_text}")
                     return None
         except Exception as e:
-            print(f"Исключение при получении токена: {e}")
+            logger.error(f"Исключение при получении токена: {e}")
             return None
 
 
@@ -261,7 +273,7 @@ class YandexDiskAPI:
                     else:
                         return False, f"Нет прав на запись (код: {response.status})"
         except Exception as e:
-            print(f"Ошибка проверки доступа: {e}")
+            logger.error(f"Ошибка проверки доступа: {e}")
             return False, str(e)
     
     def check_access(self):
@@ -282,7 +294,7 @@ class YandexDiskAPI:
             else:
                 return False, "Нет прав на запись"
         except Exception as e:
-            print(f"Ошибка проверки доступа: {e}")
+            logger.error(f"Ошибка проверки доступа: {e}")
             return False, str(e)
     
     async def upload_file_content(self, remote_path: str, content: str) -> bool:
@@ -303,7 +315,7 @@ class YandexDiskAPI:
                     async with session.put(upload_url, data=content.encode('utf-8'), headers={"Content-Type": "text/plain"}) as upload_response:
                         return upload_response.status in [200, 201]
         except Exception as e:
-            print(f"Ошибка загрузки файла: {e}")
+            logger.error(f"Ошибка загрузки файла: {e}")
             return False
     
     async def check_file_exists(self, remote_path: str) -> bool:
@@ -315,7 +327,7 @@ class YandexDiskAPI:
                 async with session.get(url, headers=self.headers, params=params) as response:
                     return response.status == 200
         except Exception as e:
-            print(f"Ошибка проверки файла: {e}")
+            logger.error(f"Ошибка проверки файла: {e}")
             return False
     
     async def delete_file_async(self, remote_path: str) -> bool:
@@ -327,7 +339,7 @@ class YandexDiskAPI:
                 async with session.delete(url, headers=self.headers, params=params) as response:
                     return response.status in [200, 202, 204]
         except Exception as e:
-            print(f"Ошибка удаления: {e}")
+            logger.error(f"Ошибка удаления: {e}")
             return False
     
     def create_folder(self, folder_path):
@@ -337,7 +349,7 @@ class YandexDiskAPI:
             response = requests.put(url, headers=self.headers, params=params, timeout=10)
             return response.status_code in [200, 201, 202]
         except Exception as e:
-            print(f"Ошибка создания папки: {e}")
+            logger.error(f"Ошибка создания папки: {e}")
             return False
     
     def upload_file(self, local_path, remote_path):
@@ -353,7 +365,7 @@ class YandexDiskAPI:
                     return upload_response.status_code == 201
             return False
         except Exception as e:
-            print(f"Ошибка загрузки файла: {e}")
+            logger.error(f"Ошибка загрузки файла: {e}")
             return False
     
     def list_folders(self, folder_path="/"):
@@ -368,7 +380,7 @@ class YandexDiskAPI:
                 return folders
             return []
         except Exception as e:
-            print(f"Ошибка получения списка папок: {e}")
+            logger.error(f"Ошибка получения списка папок: {e}")
             return []
     
     def list_files(self, folder_path):
@@ -382,7 +394,7 @@ class YandexDiskAPI:
                 return [item for item in items if item.get("type") == "file"]
             return []
         except Exception as e:
-            print(f"Ошибка получения списка файлов: {e}")
+            logger.error(f"Ошибка получения списка файлов: {e}")
             return []
     
     def delete_file(self, remote_path):
@@ -392,7 +404,7 @@ class YandexDiskAPI:
             response = requests.delete(url, headers=self.headers, params=params, timeout=10)
             return response.status_code in [200, 202, 204]
         except Exception as e:
-            print(f"Ошибка удаления файла: {e}")
+            logger.error(f"Ошибка удаления файла: {e}")
             return False
     
     def download_file(self, remote_path, local_path):
@@ -410,7 +422,7 @@ class YandexDiskAPI:
                 return True
             return False
         except Exception as e:
-            print(f"Ошибка скачивания файла: {e}")
+            logger.error(f"Ошибка скачивания файла: {e}")
             return False
 
 
@@ -558,14 +570,14 @@ async def check_yandex_access_with_test(user_id: int) -> tuple:
         
         if access:
             yandex_disk.create_folder(config['backup_path'])
-            print(f"✅ Доступ к Яндекс.Диску для user {user_id} успешно получен")
+            logger.info(f"✅ Доступ к Яндекс.Диску для user {user_id} успешно получен")
             return True, f"✅ {message}", yandex_disk
         else:
-            print(f"❌ Нет доступа к Яндекс.Диску для user {user_id}: {message}")
+            logger.warning(f"❌ Нет доступа к Яндекс.Диску для user {user_id}: {message}")
             return False, f"❌ {message}", None
             
     except Exception as e:
-        print(f"Ошибка доступа к Яндекс.Диску: {e}")
+        logger.error(f"Ошибка доступа к Яндекс.Диску: {e}")
         return False, f"❌ Ошибка: {str(e)}", None
 
 
@@ -585,7 +597,7 @@ async def send_backup_to_telegram(backup_file: Path) -> bool:
             )
         return True
     except Exception as e:
-        print(f"Ошибка отправки бэкапа в Telegram: {e}")
+        logger.error(f"Ошибка отправки бэкапа в Telegram: {e}")
         return False
 
 
@@ -620,7 +632,7 @@ async def create_backup(user_id: int = None) -> tuple:
                     
                     if yandex_disk.upload_file(str(backup_file), remote_path):
                         await cleanup_old_backups(user_id)
-                        print(f"✅ Бэкап создан на Яндекс.Диске")
+                        logger.info(f"✅ Бэкап создан на Яндекс.Диске")
                         backup_created = True
                         backup_location = "Яндекс.Диск"
         
@@ -631,7 +643,7 @@ async def create_backup(user_id: int = None) -> tuple:
         
         return backup_created, backup_file, backup_location
     except Exception as e:
-        print(f"Ошибка создания бэкапа: {e}")
+        logger.error(f"Ошибка создания бэкапа: {e}")
         return False, None, None
 
 
@@ -657,7 +669,7 @@ async def cleanup_old_backups(user_id: int = None):
         for old_backup in local_backups[:-max_backups]:
             old_backup.unlink()
     except Exception as e:
-        print(f"Ошибка очистки старых бэкапов: {e}")
+        logger.error(f"Ошибка очистки старых бэкапов: {e}")
 
 
 async def restore_from_yadisk_backup(backup_name: str, user_id: int) -> bool:
@@ -685,7 +697,7 @@ async def restore_from_yadisk_backup(backup_name: str, user_id: int) -> bool:
         
         return False
     except Exception as e:
-        print(f"Ошибка восстановления из бэкапа Яндекс.Диска: {e}")
+        logger.error(f"Ошибка восстановления из бэкапа Яндекс.Диска: {e}")
         return False
 
 
@@ -701,7 +713,7 @@ async def get_yadisk_backups(user_id: int) -> List[Dict]:
         backups.sort(key=lambda x: x['name'], reverse=True)
         return backups
     except Exception as e:
-        print(f"Ошибка получения списка бэкапов: {e}")
+        logger.error(f"Ошибка получения списка бэкапов: {e}")
         return []
 
 
@@ -888,9 +900,9 @@ async def daily_check():
             if ADMIN_ID:
                 access, message = await check_yandex_access(ADMIN_ID)
                 if not access:
-                    print(f"❌ Ежедневная проверка: нет доступа - {message}")
+                    logger.warning(f"❌ Ежедневная проверка: нет доступа - {message}")
                 else:
-                    print("✅ Ежедневная проверка: доступ есть")
+                    logger.info("✅ Ежедневная проверка: доступ есть")
             
             await asyncio.sleep(60)
             checking_daily = False
@@ -915,6 +927,7 @@ async def reset_and_process(message: types.Message, state: FSMContext, handler_f
     """Сбрасывает текущее состояние и вызывает обработчик"""
     current_state = await state.get_state()
     if current_state is not None:
+        logger.info(f"Сброс состояния {current_state} при вызове {handler_func.__name__}")
         await state.finish()
         await message.reply("✅ **Предыдущая операция отменена**", parse_mode='Markdown')
     await handler_func(message, state)
@@ -923,23 +936,27 @@ async def reset_and_process(message: types.Message, state: FSMContext, handler_f
 @dp.message_handler(lambda m: m.text == "➕ Добавить уведомление", state='*')
 async def add_notification_universal(message: types.Message, state: FSMContext):
     """Универсальный обработчик для добавления уведомления из любого состояния"""
+    logger.info(f"Пользователь {message.from_user.id} нажал 'Добавить уведомление'")
     await reset_and_process(message, state, add_notification_start)
 
 
 @dp.message_handler(lambda m: m.text == "📋 Список уведомлений", state='*')
 async def list_notifications_universal(message: types.Message, state: FSMContext):
     """Универсальный обработчик для списка уведомлений из любого состояния"""
+    logger.info(f"Пользователь {message.from_user.id} нажал 'Список уведомлений'")
     await reset_and_process(message, state, list_notifications_handler)
 
 
 @dp.message_handler(lambda m: m.text == "⚙️ Настройки", state='*')
 async def settings_universal(message: types.Message, state: FSMContext):
     """Универсальный обработчик для настроек из любого состояния"""
+    logger.info(f"Пользователь {message.from_user.id} нажал 'Настройки'")
     await reset_and_process(message, state, settings_menu_handler)
 
 
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message, state: FSMContext):
+    logger.info(f"Пользователь {message.from_user.id} запустил бота")
     await state.finish()
     
     if ADMIN_ID and message.from_user.id != ADMIN_ID:
@@ -1014,6 +1031,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @dp.callback_query_handler(lambda c: c.data == "start_auth")
 async def start_auth(callback: types.CallbackQuery, state: FSMContext):
+    logger.info(f"Пользователь {callback.from_user.id} начал авторизацию")
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
         InlineKeyboardButton("🔑 Через код авторизации", callback_data="auth_method_code"),
@@ -1308,6 +1326,7 @@ async def auth_yandex(callback: types.CallbackQuery):
 
 async def add_notification_start(message: types.Message, state: FSMContext):
     """Оригинальный обработчик добавления уведомления"""
+    logger.info(f"Начало добавления уведомления пользователем {message.from_user.id}")
     await send_with_auto_delete(
         message.chat.id,
         "✏️ **Введите текст уведомления:**\n\n"
@@ -1325,6 +1344,7 @@ async def get_notification_text(message: types.Message, state: FSMContext):
         return
     
     await state.update_data(text=message.text)
+    logger.info(f"Получен текст уведомления от {message.from_user.id}: {message.text[:50]}...")
     
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
@@ -1359,6 +1379,7 @@ async def back_to_text(callback: types.CallbackQuery, state: FSMContext):
 async def get_time_type(callback: types.CallbackQuery, state: FSMContext):
     time_type = callback.data.replace('time_', '')
     await state.update_data(time_type=time_type)
+    logger.info(f"Выбран тип времени: {time_type}")
     
     if time_type == 'hours':
         await send_with_auto_delete(
@@ -1508,6 +1529,7 @@ async def weekdays_done(callback: types.CallbackQuery, state: FSMContext):
         return
     
     await state.update_data(weekdays_list=selected)
+    logger.info(f"Выбраны дни недели: {selected}")
     
     await send_with_auto_delete(
         callback.from_user.id,
@@ -1566,6 +1588,7 @@ async def set_every_day_time(message: types.Message, state: FSMContext):
         }
         
         save_data()
+        logger.info(f"Создано ежедневное уведомление #{next_num}")
         
         await message.reply(
             f"✅ **Уведомление #{next_num} создано!**\n"
@@ -1582,6 +1605,7 @@ async def set_every_day_time(message: types.Message, state: FSMContext):
         await show_backup_notification(message)
         await state.finish()
     except Exception as e:
+        logger.error(f"Ошибка создания ежедневного уведомления: {e}")
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
 
 
@@ -1633,6 +1657,7 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
         }
         
         save_data()
+        logger.info(f"Создано уведомление по дням недели #{next_num}, дни: {days_names}")
         
         await message.reply(
             f"✅ **Уведомление #{next_num} создано!**\n"
@@ -1650,6 +1675,7 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
         await show_backup_notification(message)
         await state.finish()
     except Exception as e:
+        logger.error(f"Ошибка создания уведомления по дням недели: {e}")
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
 
 
@@ -1675,6 +1701,7 @@ async def save_notification(message: types.Message, state: FSMContext, notify_ti
     }
     
     save_data()
+    logger.info(f"Создано одноразовое уведомление #{next_num}")
     
     await message.reply(
         f"✅ **Уведомление #{next_num} создано!**\n"
@@ -1755,6 +1782,7 @@ async def set_specific_date(message: types.Message, state: FSMContext):
         
         await save_notification(message, state, notify_time)
     except Exception as e:
+        logger.error(f"Ошибка парсинга даты: {e}")
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
 
 
@@ -1763,6 +1791,7 @@ async def set_specific_date(message: types.Message, state: FSMContext):
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('snooze_'))
 async def snooze_notification_start(callback: types.CallbackQuery, state: FSMContext):
     notif_id = callback.data.replace('snooze_', '')
+    logger.info(f"Откладывание уведомления {notif_id} пользователем {callback.from_user.id}")
     
     if notif_id not in notifications:
         await callback.answer("Уведомление не найдено")
@@ -1831,6 +1860,7 @@ async def snooze_time_selected(callback: types.CallbackQuery, state: FSMContext)
     notifications[notif_id]['repeat_count'] = repeat_count + 1
     
     save_data()
+    logger.info(f"Уведомление {notif_id} отложено на {value} {unit}, повторение #{repeat_count + 1}")
     
     await bot.send_message(
         callback.from_user.id,
@@ -1842,7 +1872,6 @@ async def snooze_time_selected(callback: types.CallbackQuery, state: FSMContext)
         parse_mode='Markdown'
     )
     
-    # Показываем уведомление о бэкапе
     await show_backup_notification(callback.message)
     
     try:
@@ -2061,6 +2090,7 @@ async def snooze_set_every_day_time(message: types.Message, state: FSMContext):
         notifications[notif_id]['repeat_type'] = 'no'
         
         save_data()
+        logger.info(f"Уведомление {notif_id} отложено по дням недели")
         
         await message.reply(
             f"✅ **Уведомление отложено!**\n\n"
@@ -2074,6 +2104,7 @@ async def snooze_set_every_day_time(message: types.Message, state: FSMContext):
         await show_backup_notification(message)
         await state.finish()
     except Exception as e:
+        logger.error(f"Ошибка откладывания уведомления: {e}")
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
 
 
@@ -2122,6 +2153,7 @@ async def snooze_set_weekday_time(message: types.Message, state: FSMContext):
         save_data()
         
         days_names = [WEEKDAYS_NAMES[d] for d in sorted(weekdays_list)]
+        logger.info(f"Уведомление {notif_id} отложено на дни: {days_names}")
         
         await message.reply(
             f"✅ **Уведомление отложено!**\n\n"
@@ -2135,6 +2167,7 @@ async def snooze_set_weekday_time(message: types.Message, state: FSMContext):
         await show_backup_notification(message)
         await state.finish()
     except Exception as e:
+        logger.error(f"Ошибка откладывания уведомления: {e}")
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
 
 
@@ -2169,6 +2202,7 @@ async def snooze_set_hours(message: types.Message, state: FSMContext):
         notifications[notif_id]['repeat_type'] = 'no'
         
         save_data()
+        logger.info(f"Уведомление {notif_id} отложено на {hours} часов")
         
         await message.reply(
             f"✅ **Уведомление отложено на {hours} час(ов)!**\n\n"
@@ -2216,6 +2250,7 @@ async def snooze_set_days(message: types.Message, state: FSMContext):
         notifications[notif_id]['repeat_type'] = 'no'
         
         save_data()
+        logger.info(f"Уведомление {notif_id} отложено на {days} дней")
         
         await message.reply(
             f"✅ **Уведомление отложено на {days} день(дней)!**\n\n"
@@ -2264,6 +2299,7 @@ async def snooze_set_months(message: types.Message, state: FSMContext):
         notifications[notif_id]['repeat_type'] = 'no'
         
         save_data()
+        logger.info(f"Уведомление {notif_id} отложено на {months} месяцев")
         
         await message.reply(
             f"✅ **Уведомление отложено на {months} месяц(ев)!**\n\n"
@@ -2324,6 +2360,7 @@ async def snooze_set_specific_date(message: types.Message, state: FSMContext):
         notifications[notif_id]['repeat_type'] = 'no'
         
         save_data()
+        logger.info(f"Уведомление {notif_id} отложено на конкретную дату")
         
         await message.reply(
             f"✅ **Уведомление отложено!**\n\n"
@@ -2337,6 +2374,7 @@ async def snooze_set_specific_date(message: types.Message, state: FSMContext):
         await show_backup_notification(message)
         await state.finish()
     except Exception as e:
+        logger.error(f"Ошибка откладывания уведомления: {e}")
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
 
 
@@ -2353,6 +2391,7 @@ async def cancel_snooze(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('complete_'))
 async def handle_complete(callback: types.CallbackQuery):
     notif_id = callback.data.replace('complete_', '')
+    logger.info(f"Уведомление {notif_id} отмечено как выполненное пользователем {callback.from_user.id}")
     
     if notif_id in notifications:
         notif_num = notifications[notif_id].get('num', notif_id)
@@ -2388,6 +2427,7 @@ async def handle_complete(callback: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('complete_today_'))
 async def handle_complete_today(callback: types.CallbackQuery):
     notif_id = callback.data.replace('complete_today_', '')
+    logger.info(f"Уведомление {notif_id} отмечено как выполненное сегодня пользователем {callback.from_user.id}")
     
     if notif_id in notifications:
         notif = notifications[notif_id]
@@ -2447,6 +2487,8 @@ async def handle_complete_today(callback: types.CallbackQuery):
 
 async def list_notifications_handler(message: types.Message, state: FSMContext):
     """Оригинальный обработчик списка уведомлений"""
+    logger.info(f"Пользователь {message.from_user.id} запросил список уведомлений")
+    
     if not notifications:
         await message.reply("📭 **У вас нет активных уведомлений**", parse_mode='Markdown')
         return
@@ -2601,12 +2643,15 @@ async def settings_menu_handler(message: types.Message, state: FSMContext):
     await message.reply("⚙️ **НАСТРОЙКИ**", reply_markup=keyboard, parse_mode='Markdown')
 
 
-# Обработчики для редактирования уведомлений
+# ========== ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ ДЛЯ РЕДАКТИРОВАНИЯ ==========
+
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_'), state='*')
 async def edit_notification_start(callback: types.CallbackQuery, state: FSMContext):
     notif_id = callback.data.replace('edit_', '')
+    logger.info(f"Пользователь {callback.from_user.id} начал редактирование уведомления {notif_id}")
     
     if notif_id not in notifications:
+        logger.warning(f"Уведомление {notif_id} не найдено при попытке редактирования")
         await callback.answer("Уведомление не найдено")
         return
     
@@ -2615,14 +2660,15 @@ async def edit_notification_start(callback: types.CallbackQuery, state: FSMConte
     
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
-        InlineKeyboardButton("✏️ Изменить текст", callback_data="edit_text"),
-        InlineKeyboardButton("⏰ Изменить время", callback_data="edit_time")
+        InlineKeyboardButton("✏️ Изменить текст", callback_data="edit_text_action"),
+        InlineKeyboardButton("⏰ Изменить время", callback_data="edit_time_action")
     )
     keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit"))
     
     await bot.send_message(
         callback.from_user.id,
         f"✏️ **Что хотите изменить в уведомлении #{notifications[notif_id].get('num', notif_id)}?**\n\n"
+        f"📝 Текст: {notifications[notif_id]['text'][:50]}...\n\n"
         f"⏰ **У вас есть 3 минуты** на выбор действия",
         reply_markup=keyboard,
         parse_mode='Markdown'
@@ -2630,44 +2676,75 @@ async def edit_notification_start(callback: types.CallbackQuery, state: FSMConte
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "edit_text", state='*')
+@dp.callback_query_handler(lambda c: c.data == "edit_text_action", state='*')
 async def edit_notification_text(callback: types.CallbackQuery, state: FSMContext):
-    # Проверяем, есть ли edit_id в состоянии
+    logger.info(f"Пользователь {callback.from_user.id} выбрал изменение текста")
+    
+    # Получаем edit_id из состояния
     data = await state.get_data()
-    if not data.get('edit_id'):
-        await callback.answer("❌ Ошибка: уведомление не выбрано")
+    edit_id = data.get('edit_id')
+    
+    if not edit_id:
+        logger.error("edit_id не найден в состоянии при попытке изменения текста")
+        await callback.answer("❌ Ошибка: уведомление не выбрано. Начните редактирование заново.")
         return
+    
+    if edit_id not in notifications:
+        logger.error(f"Уведомление {edit_id} не найдено при попытке изменения текста")
+        await callback.answer("❌ Уведомление не найдено")
+        await state.finish()
+        return
+    
+    await state.update_data(editing_notif_id=edit_id)
     
     await bot.send_message(
         callback.from_user.id,
-        "✏️ **Введите новый текст уведомления:**\n\n⏰ **У вас есть 3 минуты**\n\n💡 Для отмены отправьте /cancel",
+        "✏️ **Введите новый текст уведомления:**\n\n"
+        f"📝 Старый текст: {notifications[edit_id]['text']}\n\n"
+        "⏰ **У вас есть 3 минуты**\n\n"
+        "💡 Для отмены отправьте /cancel",
         parse_mode='Markdown'
     )
     await NotificationStates.waiting_for_edit_text.set()
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "edit_time", state='*')
+@dp.callback_query_handler(lambda c: c.data == "edit_time_action", state='*')
 async def edit_notification_time(callback: types.CallbackQuery, state: FSMContext):
-    # Проверяем, есть ли edit_id в состоянии
+    logger.info(f"Пользователь {callback.from_user.id} выбрал изменение времени")
+    
+    # Получаем edit_id из состояния
     data = await state.get_data()
-    if not data.get('edit_id'):
-        await callback.answer("❌ Ошибка: уведомление не выбрано")
+    edit_id = data.get('edit_id')
+    
+    if not edit_id:
+        logger.error("edit_id не найден в состоянии при попытке изменения времени")
+        await callback.answer("❌ Ошибка: уведомление не выбрано. Начните редактирование заново.")
         return
+    
+    if edit_id not in notifications:
+        logger.error(f"Уведомление {edit_id} не найдено при попытке изменения времени")
+        await callback.answer("❌ Уведомление не найдено")
+        await state.finish()
+        return
+    
+    await state.update_data(editing_notif_id=edit_id)
     
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
-        InlineKeyboardButton("⏰ В часах", callback_data="time_hours"),
-        InlineKeyboardButton("📅 В днях", callback_data="time_days"),
-        InlineKeyboardButton("📆 В месяцах", callback_data="time_months"),
-        InlineKeyboardButton("🗓️ Конкретная дата", callback_data="time_specific"),
-        InlineKeyboardButton("📅 Каждый день", callback_data="time_every_day"),
-        InlineKeyboardButton("📆 По дням недели", callback_data="time_weekdays")
+        InlineKeyboardButton("⏰ В часах", callback_data="edit_time_hours"),
+        InlineKeyboardButton("📅 В днях", callback_data="edit_time_days"),
+        InlineKeyboardButton("📆 В месяцах", callback_data="edit_time_months"),
+        InlineKeyboardButton("🗓️ Конкретная дата", callback_data="edit_time_specific"),
+        InlineKeyboardButton("📅 Каждый день", callback_data="edit_time_every_day"),
+        InlineKeyboardButton("📆 По дням недели", callback_data="edit_time_weekdays"),
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit")
     )
     
     await bot.send_message(
         callback.from_user.id,
-        "⏱️ **Выберите новый период:**\n\n⏰ **У вас есть 3 минуты**",
+        "⏱️ **Выберите новый период для уведомления:**\n\n"
+        "⏰ **У вас есть 3 минуты**",
         reply_markup=keyboard,
         parse_mode='Markdown'
     )
@@ -2675,19 +2752,178 @@ async def edit_notification_time(callback: types.CallbackQuery, state: FSMContex
     await callback.answer()
 
 
+@dp.callback_query_handler(lambda c: c.data.startswith("edit_time_"), state=NotificationStates.waiting_for_edit_time)
+async def process_edit_time_type(callback: types.CallbackQuery, state: FSMContext):
+    time_type = callback.data.replace("edit_time_", "")
+    logger.info(f"Выбран тип времени для редактирования: {time_type}")
+    
+    data = await state.get_data()
+    edit_id = data.get('edit_id') or data.get('editing_notif_id')
+    
+    if not edit_id or edit_id not in notifications:
+        await callback.answer("❌ Уведомление не найдено")
+        await state.finish()
+        return
+    
+    await state.update_data(edit_time_type=time_type, edit_id=edit_id)
+    
+    if time_type == 'hours':
+        await send_with_auto_delete(
+            callback.from_user.id,
+            "⌛ **Введите количество часов:**\n\n"
+            "📝 Например: `5` или `24`\n\n"
+            "⏰ **У вас есть 3 минуты**\n\n"
+            "💡 Для отмены отправьте /cancel",
+            delay=180
+        )
+        await NotificationStates.waiting_for_hours.set()
+    elif time_type == 'days':
+        await send_with_auto_delete(
+            callback.from_user.id,
+            "📅 **Введите количество дней:**\n\n"
+            "📝 Например: `7` или `30`\n\n"
+            "⏰ **У вас есть 3 минуты**\n\n"
+            "💡 Для отмены отправьте /cancel",
+            delay=180
+        )
+        await NotificationStates.waiting_for_days.set()
+    elif time_type == 'months':
+        await send_with_auto_delete(
+            callback.from_user.id,
+            "📆 **Введите количество месяцев:**\n\n"
+            "📝 Например: `1` или `6`\n\n"
+            "⏰ **У вас есть 3 минуты**\n\n"
+            "💡 Для отмены отправьте /cancel",
+            delay=180
+        )
+        await NotificationStates.waiting_for_months.set()
+    elif time_type == 'specific':
+        await send_with_auto_delete(
+            callback.from_user.id,
+            "🗓️ **Введите новую дату**\n\n"
+            "📝 **Поддерживаемые форматы:**\n"
+            "• `31.12.2025 23:59` - дата и время\n"
+            "• `31.12.2025` - только дата (время текущее)\n"
+            "• `06.04 9:00` - дата и время (текущий год)\n"
+            "• `31.12` - день и месяц (ближайший в будущем)\n\n"
+            "📌 Пример: `06.04 9:00` или `31.12.2025 23:59`\n\n"
+            "⏰ **У вас есть 3 минуты**\n\n"
+            "💡 Для отмены отправьте /cancel",
+            delay=180
+        )
+        await NotificationStates.waiting_for_specific_date.set()
+    elif time_type == 'every_day':
+        await send_with_auto_delete(
+            callback.from_user.id,
+            "⏰ **Введите новое время для ежедневного уведомления**\n\n"
+            "📝 Формат: `ЧЧ:ММ`\n\n"
+            "📝 Примеры: `09:00` или `18:30`\n\n"
+            "⏰ **У вас есть 3 минуты**\n\n"
+            "💡 Для отмены отправьте /cancel",
+            delay=180
+        )
+        await NotificationStates.waiting_for_every_day_time.set()
+    elif time_type == 'weekdays':
+        keyboard = InlineKeyboardMarkup(row_width=3)
+        for name, day in WEEKDAYS_BUTTONS:
+            keyboard.add(InlineKeyboardButton(name, callback_data=f"edit_weekday_{day}"))
+        keyboard.add(InlineKeyboardButton("✅ Готово", callback_data="edit_weekdays_done"))
+        keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit"))
+        
+        await bot.send_message(
+            callback.from_user.id,
+            "📅 **Выберите новые дни недели**\n\n"
+            "Нажимайте на дни, чтобы выбрать/отменить.\n"
+            "Когда закончите, нажмите «✅ Готово»\n\n"
+            "⏰ **У вас есть 3 минуты**",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        await state.update_data(edit_selected_weekdays=[])
+        await NotificationStates.waiting_for_weekdays.set()
+    
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("edit_weekday_"), state=NotificationStates.waiting_for_weekdays)
+async def edit_select_weekday(callback: types.CallbackQuery, state: FSMContext):
+    day = int(callback.data.replace("edit_weekday_", ""))
+    data = await state.get_data()
+    selected = data.get('edit_selected_weekdays', [])
+    
+    if day in selected:
+        selected.remove(day)
+    else:
+        selected.append(day)
+    
+    await state.update_data(edit_selected_weekdays=selected)
+    
+    keyboard = InlineKeyboardMarkup(row_width=3)
+    for name, d in WEEKDAYS_BUTTONS:
+        text = f"✅ {name}" if d in selected else name
+        keyboard.add(InlineKeyboardButton(text, callback_data=f"edit_weekday_{d}"))
+    keyboard.add(InlineKeyboardButton("✅ Готово", callback_data="edit_weekdays_done"))
+    keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit"))
+    
+    selected_names = [WEEKDAYS_NAMES[d] for d in sorted(selected)]
+    status_text = f"Выбрано: {', '.join(selected_names) if selected else 'ничего не выбрано'}"
+    
+    await bot.edit_message_text(
+        f"📅 **Выберите новые дни недели**\n\n{status_text}\n\n"
+        "Нажимайте на дни, чтобы выбрать/отменить.\n"
+        "Когда закончите, нажмите «✅ Готово»\n\n"
+        "⏰ **У вас есть 3 минуты**",
+        callback.from_user.id,
+        callback.message.message_id,
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "edit_weekdays_done", state=NotificationStates.waiting_for_weekdays)
+async def edit_weekdays_done(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected = data.get('edit_selected_weekdays', [])
+    
+    if not selected:
+        await callback.answer("❌ Выберите хотя бы один день недели!")
+        return
+    
+    await state.update_data(edit_weekdays_list=selected)
+    
+    await send_with_auto_delete(
+        callback.from_user.id,
+        "⏰ **Введите новое время для уведомления**\n\n"
+        "📝 Формат: `ЧЧ:ММ`\n\n"
+        "📝 Примеры: `09:00` или `18:30`\n\n"
+        "⏰ **У вас есть 3 минуты**\n\n"
+        "💡 Для отмены отправьте /cancel",
+        delay=180
+    )
+    await NotificationStates.waiting_for_weekday_time.set()
+    await callback.answer()
+
+
 @dp.message_handler(state=NotificationStates.waiting_for_edit_text)
 async def save_edited_text(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    notif_id = data.get('edit_id')
+    edit_id = data.get('edit_id') or data.get('editing_notif_id')
     
-    if not notif_id or notif_id not in notifications:
+    logger.info(f"Сохранение нового текста для уведомления {edit_id}")
+    
+    if not edit_id or edit_id not in notifications:
+        logger.error(f"Уведомление {edit_id} не найдено при сохранении текста")
         await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
         await state.finish()
         return
     
-    notifications[notif_id]['text'] = message.text
+    old_text = notifications[edit_id]['text']
+    notifications[edit_id]['text'] = message.text
     save_data()
-    await message.reply(f"✅ **Текст уведомления изменен!**", parse_mode='Markdown')
+    
+    logger.info(f"Текст уведомления {edit_id} изменен: '{old_text[:30]}...' -> '{message.text[:30]}...'")
+    await message.reply(f"✅ **Текст уведомления изменен!**\n\nСтарый текст: {old_text}\n\nНовый текст: {message.text}", parse_mode='Markdown')
     
     await show_backup_notification(message)
     await state.finish()
@@ -2695,6 +2931,7 @@ async def save_edited_text(message: types.Message, state: FSMContext):
 
 @dp.callback_query_handler(lambda c: c.data == "cancel_edit", state='*')
 async def cancel_edit(callback: types.CallbackQuery, state: FSMContext):
+    logger.info(f"Пользователь {callback.from_user.id} отменил редактирование")
     await state.finish()
     await bot.send_message(callback.from_user.id, "✅ **Редактирование отменено**", parse_mode='Markdown')
     await callback.answer()
@@ -2703,6 +2940,7 @@ async def cancel_edit(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('delete_'))
 async def handle_delete_notification(callback: types.CallbackQuery):
     notif_id = callback.data.replace('delete_', '')
+    logger.info(f"Пользователь {callback.from_user.id} удалил уведомление {notif_id}")
     
     if notif_id in notifications:
         notif_num = notifications[notif_id].get('num', notif_id)
@@ -2739,6 +2977,7 @@ async def toggle_notifications(callback: types.CallbackQuery, state: FSMContext)
     save_data()
     
     status = "включены" if notifications_enabled else "выключены"
+    logger.info(f"Уведомления {status} пользователем {callback.from_user.id}")
     await bot.send_message(
         callback.from_user.id,
         f"✅ **Уведомления {status}!**",
@@ -3122,6 +3361,7 @@ async def select_backup(callback: types.CallbackQuery, state: FSMContext):
             f"📝 Уведомлений: {len(notifications)}",
             parse_mode='Markdown'
         )
+        await show_backup_notification(callback.message)
     else:
         await status_msg.edit_text(
             "❌ **Ошибка восстановления!**\n\n"
@@ -3162,6 +3402,7 @@ async def receive_backup_file(message: types.Message, state: FSMContext):
         else:
             await message.reply("❌ **Неверный формат бэкапа!**", parse_mode='Markdown')
     except Exception as e:
+        logger.error(f"Ошибка восстановления из бэкапа: {e}")
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
     
     await state.finish()
@@ -3170,6 +3411,7 @@ async def receive_backup_file(message: types.Message, state: FSMContext):
 @dp.message_handler(commands=['restart'])
 async def restart_bot(message: types.Message):
     if ADMIN_ID and message.from_user.id == ADMIN_ID:
+        logger.info(f"Перезапуск бота пользователем {message.from_user.id}")
         await message.reply("🔄 **Перезапуск...**", parse_mode='Markdown')
         await asyncio.sleep(2)
         os._exit(0)
@@ -3193,6 +3435,7 @@ async def cancel_operation(message: types.Message, state: FSMContext):
         await message.reply("❌ **Нет активных операций для отмены**", parse_mode='Markdown')
         return
     
+    logger.info(f"Отмена операции {current_state} пользователем {message.from_user.id}")
     await state.finish()
     await message.reply("✅ **Операция отменена!**", parse_mode='Markdown')
     await cmd_start(message, state)
@@ -3210,28 +3453,28 @@ async def on_startup(dp):
     notifications.update(new_notifications)
     save_data()
     
-    print(f"\n{'='*50}")
-    print(f"🤖 БОТ ДЛЯ УВЕДОМЛЕНИЙ v{BOT_VERSION} ({BOT_VERSION_DATE} {BOT_VERSION_TIME})")
-    print(f"{'='*50}")
+    logger.info(f"\n{'='*50}")
+    logger.info(f"🤖 БОТ ДЛЯ УВЕДОМЛЕНИЙ v{BOT_VERSION} ({BOT_VERSION_DATE} {BOT_VERSION_TIME})")
+    logger.info(f"{'='*50}")
     
     if ADMIN_ID and get_user_token(ADMIN_ID):
         access, message = await check_yandex_access(ADMIN_ID)
         if access:
-            print("✅ Доступ к Яндекс.Диску получен")
+            logger.info("✅ Доступ к Яндекс.Диску получен")
         else:
-            print(f"⚠️ Токен есть, но доступ ограничен: {message}")
+            logger.warning(f"⚠️ Токен есть, но доступ ограничен: {message}")
     else:
-        print("❌ Нет токена Яндекс.Диска (требуется авторизация)")
+        logger.warning("❌ Нет токена Яндекс.Диска (требуется авторизация)")
     
-    print(f"📝 Загружено уведомлений: {len(notifications)}")
-    print(f"🔔 Уведомления: {'Включены' if notifications_enabled else 'Выключены'}")
-    print(f"🌍 Часовой пояс: {config.get('timezone', 'Europe/Moscow')}")
-    print(f"🕐 Текущее время: {get_current_time().strftime('%d.%m.%Y %H:%M:%S')}")
-    print(f"{'='*50}\n")
+    logger.info(f"📝 Загружено уведомлений: {len(notifications)}")
+    logger.info(f"🔔 Уведомления: {'Включены' if notifications_enabled else 'Выключены'}")
+    logger.info(f"🌍 Часовой пояс: {config.get('timezone', 'Europe/Moscow')}")
+    logger.info(f"🕐 Текущее время: {get_current_time().strftime('%d.%m.%Y %H:%M:%S')}")
+    logger.info(f"{'='*50}\n")
     
     asyncio.create_task(check_notifications())
     asyncio.create_task(daily_check())
-    print("✅ Бот успешно запущен!")
+    logger.info("✅ Бот успешно запущен!")
 
 
 if __name__ == '__main__':
