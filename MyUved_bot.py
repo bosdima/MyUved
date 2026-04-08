@@ -33,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "2.10"
+BOT_VERSION = "2.11"
 BOT_VERSION_DATE = "08.04.2026"
-BOT_VERSION_TIME = "12:00"
+BOT_VERSION_TIME = "13:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -1725,8 +1725,19 @@ async def set_hours(message: types.Message, state: FSMContext):
         if hours <= 0:
             await message.reply("❌ **Ошибка!** Введите положительное число часов.", parse_mode='Markdown')
             return
-        notify_time = get_current_time() + timedelta(hours=hours)
-        await save_notification(message, state, notify_time)
+        
+        # Проверяем, редактируем ли мы существующее уведомление
+        data = await state.get_data()
+        edit_id = data.get('edit_id') or data.get('editing_notif_id')
+        
+        if edit_id and edit_id in notifications:
+            # Редактирование существующего уведомления
+            notify_time = get_current_time() + timedelta(hours=hours)
+            await save_edited_notification(message, state, edit_id, notify_time)
+        else:
+            # Новое уведомление
+            notify_time = get_current_time() + timedelta(hours=hours)
+            await save_notification(message, state, notify_time)
     except ValueError:
         await message.reply("❌ **Ошибка!** Введите корректное число часов.", parse_mode='Markdown')
 
@@ -1738,8 +1749,16 @@ async def set_days(message: types.Message, state: FSMContext):
         if days <= 0:
             await message.reply("❌ **Ошибка!** Введите положительное число дней.", parse_mode='Markdown')
             return
-        notify_time = get_current_time() + timedelta(days=days)
-        await save_notification(message, state, notify_time)
+        
+        data = await state.get_data()
+        edit_id = data.get('edit_id') or data.get('editing_notif_id')
+        
+        if edit_id and edit_id in notifications:
+            notify_time = get_current_time() + timedelta(days=days)
+            await save_edited_notification(message, state, edit_id, notify_time)
+        else:
+            notify_time = get_current_time() + timedelta(days=days)
+            await save_notification(message, state, notify_time)
     except ValueError:
         await message.reply("❌ **Ошибка!** Введите корректное число дней.", parse_mode='Markdown')
 
@@ -1751,9 +1770,17 @@ async def set_months(message: types.Message, state: FSMContext):
         if months <= 0:
             await message.reply("❌ **Ошибка!** Введите положительное число месяцев.", parse_mode='Markdown')
             return
+        
         days = months * 30
-        notify_time = get_current_time() + timedelta(days=days)
-        await save_notification(message, state, notify_time)
+        data = await state.get_data()
+        edit_id = data.get('edit_id') or data.get('editing_notif_id')
+        
+        if edit_id and edit_id in notifications:
+            notify_time = get_current_time() + timedelta(days=days)
+            await save_edited_notification(message, state, edit_id, notify_time)
+        else:
+            notify_time = get_current_time() + timedelta(days=days)
+            await save_notification(message, state, notify_time)
     except ValueError:
         await message.reply("❌ **Ошибка!** Введите корректное число месяцев.", parse_mode='Markdown')
 
@@ -1780,10 +1807,114 @@ async def set_specific_date(message: types.Message, state: FSMContext):
             await message.reply("❌ **Ошибка!** Дата должна быть в будущем!", parse_mode='Markdown')
             return
         
-        await save_notification(message, state, notify_time)
+        data = await state.get_data()
+        edit_id = data.get('edit_id') or data.get('editing_notif_id')
+        
+        if edit_id and edit_id in notifications:
+            await save_edited_notification(message, state, edit_id, notify_time)
+        else:
+            await save_notification(message, state, notify_time)
     except Exception as e:
         logger.error(f"Ошибка парсинга даты: {e}")
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
+
+
+async def save_edited_notification(message: types.Message, state: FSMContext, notif_id: str, notify_time: datetime):
+    """Сохраняет отредактированное уведомление"""
+    logger.info(f"Сохранение отредактированного уведомления {notif_id}")
+    
+    if notif_id not in notifications:
+        await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+        await state.finish()
+        return
+    
+    tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+    if notify_time.tzinfo is None:
+        notify_time = tz.localize(notify_time)
+    notify_time_utc = notify_time.astimezone(pytz.UTC)
+    
+    # Сохраняем старый repeat_type и другие параметры
+    old_notif = notifications[notif_id]
+    
+    notifications[notif_id]['time'] = notify_time_utc.isoformat()
+    notifications[notif_id]['notified'] = False
+    notifications[notif_id]['is_repeat'] = False
+    notifications[notif_id]['repeat_count'] = 0
+    # Сохраняем repeat_type как 'no' для одноразового уведомления
+    notifications[notif_id]['repeat_type'] = 'no'
+    # Удаляем повторяющиеся параметры, если они были
+    if 'repeat_hour' in notifications[notif_id]:
+        del notifications[notif_id]['repeat_hour']
+    if 'repeat_minute' in notifications[notif_id]:
+        del notifications[notif_id]['repeat_minute']
+    if 'weekdays_list' in notifications[notif_id]:
+        del notifications[notif_id]['weekdays_list']
+    if 'last_trigger' in notifications[notif_id]:
+        del notifications[notif_id]['last_trigger']
+    if 'next_time' in notifications[notif_id]:
+        del notifications[notif_id]['next_time']
+    
+    save_data()
+    
+    await message.reply(
+        f"✅ **Уведомление #{notifications[notif_id].get('num', notif_id)} изменено!**\n"
+        f"📝 {notifications[notif_id]['text']}\n"
+        f"⏰ Новое время: {notify_time.strftime('%d.%m.%Y в %H:%M')}\n\n"
+        f"ℹ️ Уведомление стало одноразовым",
+        parse_mode='Markdown'
+    )
+    
+    await show_backup_notification(message)
+    await state.finish()
+
+
+async def save_edited_repeat_notification(message: types.Message, state: FSMContext, notif_id: str, time_data: dict):
+    """Сохраняет отредактированное повторяющееся уведомление"""
+    logger.info(f"Сохранение отредактированного повторяющегося уведомления {notif_id}")
+    
+    if notif_id not in notifications:
+        await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+        await state.finish()
+        return
+    
+    notifications[notif_id].update(time_data)
+    notifications[notif_id]['notified'] = False
+    notifications[notif_id]['is_repeat'] = False
+    notifications[notif_id]['repeat_count'] = 0
+    
+    # Пересчитываем next_time
+    now = get_current_time()
+    repeat_type = notifications[notif_id].get('repeat_type')
+    
+    if repeat_type == 'every_day':
+        hour = notifications[notif_id].get('repeat_hour', 0)
+        minute = notifications[notif_id].get('repeat_minute', 0)
+        tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+        next_time = tz.localize(datetime(now.year, now.month, now.day, hour, minute))
+        if next_time <= now:
+            next_time += timedelta(days=1)
+        notifications[notif_id]['next_time'] = next_time.isoformat()
+        notifications[notif_id]['last_trigger'] = (next_time - timedelta(days=1)).isoformat()
+    elif repeat_type == 'weekdays':
+        hour = notifications[notif_id].get('repeat_hour', 0)
+        minute = notifications[notif_id].get('repeat_minute', 0)
+        weekdays_list = notifications[notif_id].get('weekdays_list', [])
+        next_time = get_next_weekday(weekdays_list, hour, minute, now)
+        if next_time:
+            notifications[notif_id]['next_time'] = next_time.isoformat()
+            notifications[notif_id]['last_trigger'] = (next_time - timedelta(days=7)).isoformat()
+    
+    save_data()
+    
+    await message.reply(
+        f"✅ **Уведомление #{notifications[notif_id].get('num', notif_id)} изменено!**\n"
+        f"📝 {notifications[notif_id]['text']}\n"
+        f"⏰ Время обновлено",
+        parse_mode='Markdown'
+    )
+    
+    await show_backup_notification(message)
+    await state.finish()
 
 
 # ========== ФУНКЦИИ ДЛЯ ОТЛОЖЕННЫХ УВЕДОМЛЕНИЙ ==========
@@ -2656,7 +2787,7 @@ async def edit_notification_start(callback: types.CallbackQuery, state: FSMConte
         return
     
     # Сохраняем ID уведомления в состоянии
-    await state.update_data(edit_id=notif_id)
+    await state.update_data(edit_id=notif_id, editing_notif_id=notif_id)
     
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
@@ -2682,7 +2813,7 @@ async def edit_notification_text(callback: types.CallbackQuery, state: FSMContex
     
     # Получаем edit_id из состояния
     data = await state.get_data()
-    edit_id = data.get('edit_id')
+    edit_id = data.get('edit_id') or data.get('editing_notif_id')
     
     if not edit_id:
         logger.error("edit_id не найден в состоянии при попытке изменения текста")
@@ -2715,7 +2846,7 @@ async def edit_notification_time(callback: types.CallbackQuery, state: FSMContex
     
     # Получаем edit_id из состояния
     data = await state.get_data()
-    edit_id = data.get('edit_id')
+    edit_id = data.get('edit_id') or data.get('editing_notif_id')
     
     if not edit_id:
         logger.error("edit_id не найден в состоянии при попытке изменения времени")
@@ -2728,7 +2859,7 @@ async def edit_notification_time(callback: types.CallbackQuery, state: FSMContex
         await state.finish()
         return
     
-    await state.update_data(editing_notif_id=edit_id)
+    await state.update_data(editing_notif_id=edit_id, edit_id=edit_id)
     
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
@@ -2765,7 +2896,7 @@ async def process_edit_time_type(callback: types.CallbackQuery, state: FSMContex
         await state.finish()
         return
     
-    await state.update_data(edit_time_type=time_type, edit_id=edit_id)
+    await state.update_data(edit_time_type=time_type, edit_id=edit_id, editing_notif_id=edit_id)
     
     if time_type == 'hours':
         await send_with_auto_delete(
@@ -2927,6 +3058,295 @@ async def save_edited_text(message: types.Message, state: FSMContext):
     
     await show_backup_notification(message)
     await state.finish()
+
+
+@dp.message_handler(state=NotificationStates.waiting_for_every_day_time)
+async def set_every_day_time_edit(message: types.Message, state: FSMContext):
+    """Обработчик для установки времени при редактировании или создании"""
+    try:
+        match = re.match(r'^(\d{1,2}):(\d{2})$', message.text.strip())
+        if not match:
+            await message.reply(
+                "❌ **Ошибка!** Неверный формат времени.\n"
+                "Используйте формат `ЧЧ:ММ` (например: `09:00` или `18:30`)",
+                parse_mode='Markdown'
+            )
+            return
+        
+        hour, minute = map(int, match.groups())
+        if hour > 23 or minute > 59:
+            await message.reply("❌ **Ошибка!** Некорректное время (часы 0-23, минуты 0-59)", parse_mode='Markdown')
+            return
+        
+        data = await state.get_data()
+        edit_id = data.get('edit_id') or data.get('editing_notif_id')
+        
+        if edit_id and edit_id in notifications:
+            # Редактирование существующего уведомления
+            if notifications[edit_id].get('repeat_type') == 'every_day':
+                # Обновляем время для ежедневного уведомления
+                notifications[edit_id]['repeat_hour'] = hour
+                notifications[edit_id]['repeat_minute'] = minute
+                
+                # Пересчитываем next_time
+                now = get_current_time()
+                tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+                next_time = tz.localize(datetime(now.year, now.month, now.day, hour, minute))
+                if next_time <= now:
+                    next_time += timedelta(days=1)
+                notifications[edit_id]['next_time'] = next_time.isoformat()
+                notifications[edit_id]['last_trigger'] = (next_time - timedelta(days=1)).isoformat()
+                notifications[edit_id]['time'] = next_time.isoformat()
+                notifications[edit_id]['notified'] = False
+                notifications[edit_id]['is_repeat'] = False
+                notifications[edit_id]['repeat_count'] = 0
+                save_data()
+                
+                await message.reply(
+                    f"✅ **Уведомление #{notifications[edit_id].get('num', edit_id)} изменено!**\n"
+                    f"📝 {notifications[edit_id]['text']}\n"
+                    f"📅 **Тип:** Ежедневное\n"
+                    f"⏰ **Новое время:** {hour:02d}:{minute:02d}\n",
+                    parse_mode='Markdown'
+                )
+                await show_backup_notification(message)
+                await state.finish()
+            else:
+                # Превращаем в ежедневное уведомление
+                next_num = notifications[edit_id].get('num', edit_id)
+                now = get_current_time()
+                tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+                first_time = tz.localize(datetime(now.year, now.month, now.day, hour, minute))
+                if first_time <= now:
+                    first_time += timedelta(days=1)
+                
+                notifications[edit_id] = {
+                    'text': notifications[edit_id]['text'],
+                    'time': first_time.isoformat(),
+                    'created': get_current_time().isoformat(),
+                    'notified': False,
+                    'num': next_num,
+                    'repeat_type': 'every_day',
+                    'repeat_hour': hour,
+                    'repeat_minute': minute,
+                    'last_trigger': (first_time - timedelta(days=1)).isoformat(),
+                    'next_time': first_time.isoformat(),
+                    'is_repeat': False,
+                    'repeat_count': 0
+                }
+                save_data()
+                
+                await message.reply(
+                    f"✅ **Уведомление #{next_num} изменено!**\n"
+                    f"📝 {notifications[edit_id]['text']}\n"
+                    f"📅 **Тип:** Ежедневное\n"
+                    f"⏰ **Новое время:** {hour:02d}:{minute:02d}\n",
+                    parse_mode='Markdown'
+                )
+                await show_backup_notification(message)
+                await state.finish()
+        else:
+            # Новое уведомление
+            data = await state.get_data()
+            next_num = len(notifications) + 1
+            notif_id = str(next_num)
+            
+            now = get_current_time()
+            tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+            first_time = tz.localize(datetime(now.year, now.month, now.day, hour, minute))
+            
+            if first_time <= now:
+                first_time += timedelta(days=1)
+            
+            notifications[notif_id] = {
+                'text': data['text'],
+                'time': first_time.isoformat(),
+                'created': get_current_time().isoformat(),
+                'notified': False,
+                'num': next_num,
+                'repeat_type': 'every_day',
+                'repeat_hour': hour,
+                'repeat_minute': minute,
+                'last_trigger': (first_time - timedelta(days=1)).isoformat(),
+                'next_time': first_time.isoformat(),
+                'is_repeat': False,
+                'repeat_count': 0
+            }
+            
+            save_data()
+            logger.info(f"Создано ежедневное уведомление #{next_num}")
+            
+            await message.reply(
+                f"✅ **Уведомление #{next_num} создано!**\n"
+                f"📝 {data['text']}\n"
+                f"📅 **Тип:** Ежедневное\n"
+                f"⏰ **Время:** {hour:02d}:{minute:02d}\n"
+                f"🔁 Будет повторяться каждый день\n\n"
+                f"ℹ️ Когда уведомление сработает, вы сможете:\n"
+                f"• Нажать «✅ Выполнено сегодня» - уведомление не повторится сегодня\n"
+                f"• Нажать «⏰ Отложить уведомление» - выбрать новое время для напоминания",
+                parse_mode='Markdown'
+            )
+            
+            await show_backup_notification(message)
+            await state.finish()
+    except Exception as e:
+        logger.error(f"Ошибка создания/редактирования ежедневного уведомления: {e}")
+        await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
+
+
+@dp.message_handler(state=NotificationStates.waiting_for_weekday_time)
+async def set_weekday_time_edit(message: types.Message, state: FSMContext):
+    """Обработчик для установки времени по дням недели при редактировании или создании"""
+    try:
+        match = re.match(r'^(\d{1,2}):(\d{2})$', message.text.strip())
+        if not match:
+            await message.reply(
+                "❌ **Ошибка!** Неверный формат времени.\n"
+                "Используйте формат `ЧЧ:ММ` (например: `09:00` или `18:30`)",
+                parse_mode='Markdown'
+            )
+            return
+        
+        hour, minute = map(int, match.groups())
+        if hour > 23 or minute > 59:
+            await message.reply("❌ **Ошибка!** Некорректное время (часы 0-23, минуты 0-59)", parse_mode='Markdown')
+            return
+        
+        data = await state.get_data()
+        edit_id = data.get('edit_id') or data.get('editing_notif_id')
+        weekdays_list = data.get('edit_weekdays_list', [])
+        
+        if not weekdays_list:
+            weekdays_list = data.get('weekdays_list', [])
+        
+        if edit_id and edit_id in notifications:
+            # Редактирование существующего уведомления
+            if notifications[edit_id].get('repeat_type') == 'weekdays' and weekdays_list:
+                # Обновляем дни и время
+                notifications[edit_id]['weekdays_list'] = weekdays_list
+                notifications[edit_id]['repeat_hour'] = hour
+                notifications[edit_id]['repeat_minute'] = minute
+                
+                # Пересчитываем next_time
+                now = get_current_time()
+                next_time = get_next_weekday(weekdays_list, hour, minute, now)
+                if next_time:
+                    notifications[edit_id]['next_time'] = next_time.isoformat()
+                    notifications[edit_id]['last_trigger'] = (next_time - timedelta(days=7)).isoformat()
+                    notifications[edit_id]['time'] = next_time.isoformat()
+                
+                notifications[edit_id]['notified'] = False
+                notifications[edit_id]['is_repeat'] = False
+                notifications[edit_id]['repeat_count'] = 0
+                save_data()
+                
+                days_names = [WEEKDAYS_NAMES[d] for d in sorted(weekdays_list)]
+                await message.reply(
+                    f"✅ **Уведомление #{notifications[edit_id].get('num', edit_id)} изменено!**\n"
+                    f"📝 {notifications[edit_id]['text']}\n"
+                    f"📅 **Тип:** По дням недели\n"
+                    f"📆 **Дни:** {', '.join(days_names)}\n"
+                    f"⏰ **Новое время:** {hour:02d}:{minute:02d}\n",
+                    parse_mode='Markdown'
+                )
+                await show_backup_notification(message)
+                await state.finish()
+            else:
+                # Превращаем в уведомление по дням недели
+                next_num = notifications[edit_id].get('num', edit_id)
+                first_time = get_next_weekday(weekdays_list, hour, minute)
+                
+                if not first_time:
+                    await message.reply("❌ **Ошибка!** Не удалось определить дату", parse_mode='Markdown')
+                    return
+                
+                days_names = [WEEKDAYS_NAMES[d] for d in sorted(weekdays_list)]
+                
+                notifications[edit_id] = {
+                    'text': notifications[edit_id]['text'],
+                    'time': first_time.isoformat(),
+                    'created': get_current_time().isoformat(),
+                    'notified': False,
+                    'num': next_num,
+                    'repeat_type': 'weekdays',
+                    'repeat_hour': hour,
+                    'repeat_minute': minute,
+                    'weekdays_list': weekdays_list,
+                    'last_trigger': (first_time - timedelta(days=7)).isoformat(),
+                    'next_time': first_time.isoformat(),
+                    'is_repeat': False,
+                    'repeat_count': 0
+                }
+                save_data()
+                
+                await message.reply(
+                    f"✅ **Уведомление #{next_num} изменено!**\n"
+                    f"📝 {notifications[edit_id]['text']}\n"
+                    f"📅 **Тип:** По дням недели\n"
+                    f"📆 **Дни:** {', '.join(days_names)}\n"
+                    f"⏰ **Новое время:** {hour:02d}:{minute:02d}\n",
+                    parse_mode='Markdown'
+                )
+                await show_backup_notification(message)
+                await state.finish()
+        else:
+            # Новое уведомление
+            if not weekdays_list:
+                weekdays_list = data.get('weekdays_list', [])
+            
+            if not weekdays_list:
+                await message.reply("❌ **Ошибка!** Не выбраны дни недели", parse_mode='Markdown')
+                return
+            
+            first_time = get_next_weekday(weekdays_list, hour, minute)
+            
+            if not first_time:
+                await message.reply("❌ **Ошибка!** Не удалось определить дату", parse_mode='Markdown')
+                return
+            
+            next_num = len(notifications) + 1
+            notif_id = str(next_num)
+            
+            days_names = [WEEKDAYS_NAMES[d] for d in sorted(weekdays_list)]
+            
+            notifications[notif_id] = {
+                'text': data['text'],
+                'time': first_time.isoformat(),
+                'created': get_current_time().isoformat(),
+                'notified': False,
+                'num': next_num,
+                'repeat_type': 'weekdays',
+                'repeat_hour': hour,
+                'repeat_minute': minute,
+                'weekdays_list': weekdays_list,
+                'last_trigger': (first_time - timedelta(days=7)).isoformat(),
+                'next_time': first_time.isoformat(),
+                'is_repeat': False,
+                'repeat_count': 0
+            }
+            
+            save_data()
+            logger.info(f"Создано уведомление по дням недели #{next_num}, дни: {days_names}")
+            
+            await message.reply(
+                f"✅ **Уведомление #{next_num} создано!**\n"
+                f"📝 {data['text']}\n"
+                f"📅 **Тип:** По дням недели\n"
+                f"📆 **Дни:** {', '.join(days_names)}\n"
+                f"⏰ **Время:** {hour:02d}:{minute:02d}\n"
+                f"🔁 Будет повторяться каждую неделю\n\n"
+                f"ℹ️ Когда уведомление сработает, вы сможете:\n"
+                f"• Нажать «✅ Выполнено сегодня» - уведомление не повторится сегодня\n"
+                f"• Нажать «⏰ Отложить уведомление» - выбрать новое время для напоминания",
+                parse_mode='Markdown'
+            )
+            
+            await show_backup_notification(message)
+            await state.finish()
+    except Exception as e:
+        logger.error(f"Ошибка создания/редактирования уведомления по дням недели: {e}")
+        await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
 
 
 @dp.callback_query_handler(lambda c: c.data == "cancel_edit", state='*')
