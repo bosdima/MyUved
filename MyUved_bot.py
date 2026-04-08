@@ -33,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "2.17"
+BOT_VERSION = "2.18"
 BOT_VERSION_DATE = "08.04.2026"
-BOT_VERSION_TIME = "16:30"
+BOT_VERSION_TIME = "17:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -2824,7 +2824,7 @@ async def edit_notification_text_handler(callback: types.CallbackQuery, state: F
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_time_') and c.data not in ['edit_time_hours', 'edit_time_days', 'edit_time_months', 'edit_time_specific', 'edit_time_every_day', 'edit_time_weekdays'], state='*')
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_time_') and len(c.data) > 10 and c.data[9:].isdigit(), state='*')
 async def edit_notification_time_handler(callback: types.CallbackQuery, state: FSMContext):
     """Обработчик для кнопки 'Изменить время' (только для формата edit_time_X, где X - число)"""
     # Извлекаем edit_id из callback_data (формат: edit_time_3)
@@ -3588,6 +3588,68 @@ async def on_startup(dp):
     init_folders()
     load_data()
     
+    # Если нет уведомлений, создаем тестовые для отладки
+    if len(notifications) == 0:
+        logger.info("📝 Создание тестовых уведомлений...")
+        now = get_current_time()
+        tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
+        
+        # Тестовое уведомление #1 - одноразовое
+        test_time_1 = tz.localize(datetime(now.year, now.month, now.day + 1, 20, 0))
+        notifications["1"] = {
+            'text': 'Передать показания счётчиков',
+            'time': test_time_1.isoformat(),
+            'created': now.isoformat(),
+            'notified': False,
+            'num': 1,
+            'repeat_type': 'no',
+            'is_repeat': False,
+            'repeat_count': 0
+        }
+        
+        # Тестовое уведомление #2 - по дням недели
+        weekdays_list = [0, 1, 2, 3, 4]  # Пн-Пт
+        next_time = get_next_weekday(weekdays_list, 10, 0, now)
+        if next_time:
+            notifications["2"] = {
+                'text': 'Купить Акции (на Золото) Т-Банк',
+                'time': next_time.isoformat(),
+                'created': now.isoformat(),
+                'notified': False,
+                'num': 2,
+                'repeat_type': 'weekdays',
+                'repeat_hour': 10,
+                'repeat_minute': 0,
+                'weekdays_list': weekdays_list,
+                'last_trigger': (next_time - timedelta(days=7)).isoformat(),
+                'next_time': next_time.isoformat(),
+                'is_repeat': False,
+                'repeat_count': 0
+            }
+        
+        # Тестовое уведомление #3 - ежедневное
+        test_time_3 = tz.localize(datetime(now.year, now.month, now.day, 7, 0))
+        if test_time_3 <= now:
+            test_time_3 += timedelta(days=1)
+        notifications["3"] = {
+            'text': 'Выпить таблетки',
+            'time': test_time_3.isoformat(),
+            'created': now.isoformat(),
+            'notified': False,
+            'num': 3,
+            'repeat_type': 'every_day',
+            'repeat_hour': 7,
+            'repeat_minute': 0,
+            'last_trigger': (test_time_3 - timedelta(days=1)).isoformat(),
+            'next_time': test_time_3.isoformat(),
+            'is_repeat': False,
+            'repeat_count': 0
+        }
+        
+        save_data()
+        logger.info(f"✅ Создано {len(notifications)} тестовых уведомлений")
+    
+    # Перенумерация уведомлений
     new_notifications = {}
     for i, (notif_id, notif) in enumerate(notifications.items(), 1):
         notif['num'] = i
