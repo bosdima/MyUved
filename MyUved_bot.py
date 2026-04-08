@@ -33,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "2.13"
+BOT_VERSION = "2.14"
 BOT_VERSION_DATE = "08.04.2026"
-BOT_VERSION_TIME = "14:30"
+BOT_VERSION_TIME = "15:00"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -68,8 +68,6 @@ notifications: Dict = {}
 config: Dict = {}
 user_tokens: Dict[int, str] = {}
 notifications_enabled = True
-# Хранилище для ID уведомления при редактировании (вне FSM)
-user_edit_cache: Dict[int, str] = {}
 
 # URL для Яндекс.Диск API
 YANDEX_API_BASE = "https://cloud-api.yandex.net/v1/disk"
@@ -447,6 +445,7 @@ class NotificationStates(StatesGroup):
     waiting_for_every_day_time = State()
     waiting_for_edit_text = State()
     waiting_for_edit_time = State()
+    waiting_for_edit_selection = State()  # Новое состояние для выбора действия редактирования
 
 
 class SettingsStates(StatesGroup):
@@ -2806,9 +2805,9 @@ async def edit_notification_start(callback: types.CallbackQuery, state: FSMConte
         await callback.answer("Уведомление не найдено")
         return
     
-    # Сохраняем ID уведомления в кэше пользователя (вне FSM)
-    user_edit_cache[callback.from_user.id] = notif_id
-    logger.info(f"Сохранен edit_id={notif_id} для пользователя {callback.from_user.id} в кэш")
+    # Сохраняем ID уведомления в FSM состояние
+    await state.update_data(edit_id=notif_id)
+    logger.info(f"Сохранен edit_id={notif_id} в FSM для пользователя {callback.from_user.id}")
     
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
@@ -2832,24 +2831,21 @@ async def edit_notification_start(callback: types.CallbackQuery, state: FSMConte
 async def edit_notification_text(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"Пользователь {callback.from_user.id} выбрал изменение текста")
     
-    # Получаем edit_id из кэша пользователя
-    edit_id = user_edit_cache.get(callback.from_user.id)
-    logger.info(f"Получен edit_id из кэша: {edit_id} для пользователя {callback.from_user.id}")
+    # Получаем edit_id из FSM состояния
+    data = await state.get_data()
+    edit_id = data.get('edit_id')
+    logger.info(f"Получен edit_id из FSM: {edit_id} для пользователя {callback.from_user.id}")
     
     if not edit_id:
-        logger.error(f"edit_id не найден в кэше для пользователя {callback.from_user.id}")
+        logger.error(f"edit_id не найден в FSM для пользователя {callback.from_user.id}")
         await callback.answer("❌ Ошибка: уведомление не выбрано. Начните редактирование заново.")
         return
     
     if edit_id not in notifications:
         logger.error(f"Уведомление {edit_id} не найдено при попытке изменения текста")
         await callback.answer("❌ Уведомление не найдено")
-        user_edit_cache.pop(callback.from_user.id, None)
         await state.finish()
         return
-    
-    # Сохраняем в состояние для дальнейшего использования
-    await state.update_data(edit_id=edit_id)
     
     await bot.send_message(
         callback.from_user.id,
@@ -2867,24 +2863,21 @@ async def edit_notification_text(callback: types.CallbackQuery, state: FSMContex
 async def edit_notification_time(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"Пользователь {callback.from_user.id} выбрал изменение времени")
     
-    # Получаем edit_id из кэша пользователя
-    edit_id = user_edit_cache.get(callback.from_user.id)
-    logger.info(f"Получен edit_id из кэша: {edit_id} для пользователя {callback.from_user.id}")
+    # Получаем edit_id из FSM состояния
+    data = await state.get_data()
+    edit_id = data.get('edit_id')
+    logger.info(f"Получен edit_id из FSM: {edit_id} для пользователя {callback.from_user.id}")
     
     if not edit_id:
-        logger.error(f"edit_id не найден в кэше для пользователя {callback.from_user.id}")
+        logger.error(f"edit_id не найден в FSM для пользователя {callback.from_user.id}")
         await callback.answer("❌ Ошибка: уведомление не выбрано. Начните редактирование заново.")
         return
     
     if edit_id not in notifications:
         logger.error(f"Уведомление {edit_id} не найдено при попытке изменения времени")
         await callback.answer("❌ Уведомление не найдено")
-        user_edit_cache.pop(callback.from_user.id, None)
         await state.finish()
         return
-    
-    # Сохраняем в состояние для дальнейшего использования
-    await state.update_data(edit_id=edit_id)
     
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
@@ -3072,7 +3065,6 @@ async def save_edited_text(message: types.Message, state: FSMContext):
         logger.error(f"Уведомление {edit_id} не найдено при сохранении текста")
         await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
         await state.finish()
-        user_edit_cache.pop(message.from_user.id, None)
         return
     
     old_text = notifications[edit_id]['text']
@@ -3083,16 +3075,12 @@ async def save_edited_text(message: types.Message, state: FSMContext):
     await message.reply(f"✅ **Текст уведомления изменен!**\n\nСтарый текст: {old_text}\n\nНовый текст: {message.text}", parse_mode='Markdown')
     
     await show_backup_notification(message)
-    # Очищаем кэш
-    user_edit_cache.pop(message.from_user.id, None)
     await state.finish()
 
 
 @dp.callback_query_handler(lambda c: c.data == "cancel_edit", state='*')
 async def cancel_edit(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"Пользователь {callback.from_user.id} отменил редактирование")
-    # Очищаем кэш
-    user_edit_cache.pop(callback.from_user.id, None)
     await state.finish()
     await bot.send_message(callback.from_user.id, "✅ **Редактирование отменено**", parse_mode='Markdown')
     await callback.answer()
@@ -3597,8 +3585,6 @@ async def cancel_operation(message: types.Message, state: FSMContext):
         return
     
     logger.info(f"Отмена операции {current_state} пользователем {message.from_user.id}")
-    # Очищаем кэш
-    user_edit_cache.pop(message.from_user.id, None)
     await state.finish()
     await message.reply("✅ **Операция отменена!**", parse_mode='Markdown')
     await cmd_start(message, state)
