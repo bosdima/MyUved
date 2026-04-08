@@ -33,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "2.12"
+BOT_VERSION = "2.13"
 BOT_VERSION_DATE = "08.04.2026"
-BOT_VERSION_TIME = "14:00"
+BOT_VERSION_TIME = "14:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -2808,6 +2808,7 @@ async def edit_notification_start(callback: types.CallbackQuery, state: FSMConte
     
     # Сохраняем ID уведомления в кэше пользователя (вне FSM)
     user_edit_cache[callback.from_user.id] = notif_id
+    logger.info(f"Сохранен edit_id={notif_id} для пользователя {callback.from_user.id} в кэш")
     
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
@@ -2833,6 +2834,7 @@ async def edit_notification_text(callback: types.CallbackQuery, state: FSMContex
     
     # Получаем edit_id из кэша пользователя
     edit_id = user_edit_cache.get(callback.from_user.id)
+    logger.info(f"Получен edit_id из кэша: {edit_id} для пользователя {callback.from_user.id}")
     
     if not edit_id:
         logger.error(f"edit_id не найден в кэше для пользователя {callback.from_user.id}")
@@ -2867,6 +2869,7 @@ async def edit_notification_time(callback: types.CallbackQuery, state: FSMContex
     
     # Получаем edit_id из кэша пользователя
     edit_id = user_edit_cache.get(callback.from_user.id)
+    logger.info(f"Получен edit_id из кэша: {edit_id} для пользователя {callback.from_user.id}")
     
     if not edit_id:
         logger.error(f"edit_id не найден в кэше для пользователя {callback.from_user.id}")
