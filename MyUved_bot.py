@@ -33,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "2.16"
+BOT_VERSION = "2.17"
 BOT_VERSION_DATE = "08.04.2026"
-BOT_VERSION_TIME = "16:00"
+BOT_VERSION_TIME = "16:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -2794,7 +2794,8 @@ async def settings_menu_handler(message: types.Message, state: FSMContext):
 
 # ========== ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ ДЛЯ РЕДАКТИРОВАНИЯ ==========
 
-# ВАЖНО: Эти обработчики должны быть ПЕРЕД обработчиком edit_* чтобы они перехватывали callback'ы первыми
+# ВАЖНО: Обработчики для edit_text_* и edit_time_* должны быть ПЕРЕД обработчиком edit_*
+# чтобы они перехватывали callback'ы первыми
 
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_text_'), state='*')
 async def edit_notification_text_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -2823,9 +2824,9 @@ async def edit_notification_text_handler(callback: types.CallbackQuery, state: F
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_time_'), state='*')
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_time_') and c.data not in ['edit_time_hours', 'edit_time_days', 'edit_time_months', 'edit_time_specific', 'edit_time_every_day', 'edit_time_weekdays'], state='*')
 async def edit_notification_time_handler(callback: types.CallbackQuery, state: FSMContext):
-    """Обработчик для кнопки 'Изменить время'"""
+    """Обработчик для кнопки 'Изменить время' (только для формата edit_time_X, где X - число)"""
     # Извлекаем edit_id из callback_data (формат: edit_time_3)
     edit_id = callback.data.replace("edit_time_", "")
     logger.info(f"Пользователь {callback.from_user.id} выбрал изменение времени для уведомления {edit_id}")
@@ -2894,12 +2895,7 @@ async def edit_notification_start(callback: types.CallbackQuery, state: FSMConte
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "edit_time_hours", state=NotificationStates.waiting_for_edit_time)
-@dp.callback_query_handler(lambda c: c.data == "edit_time_days", state=NotificationStates.waiting_for_edit_time)
-@dp.callback_query_handler(lambda c: c.data == "edit_time_months", state=NotificationStates.waiting_for_edit_time)
-@dp.callback_query_handler(lambda c: c.data == "edit_time_specific", state=NotificationStates.waiting_for_edit_time)
-@dp.callback_query_handler(lambda c: c.data == "edit_time_every_day", state=NotificationStates.waiting_for_edit_time)
-@dp.callback_query_handler(lambda c: c.data == "edit_time_weekdays", state=NotificationStates.waiting_for_edit_time)
+@dp.callback_query_handler(lambda c: c.data in ['edit_time_hours', 'edit_time_days', 'edit_time_months', 'edit_time_specific', 'edit_time_every_day', 'edit_time_weekdays'], state=NotificationStates.waiting_for_edit_time)
 async def process_edit_time_type(callback: types.CallbackQuery, state: FSMContext):
     time_type = callback.data.replace("edit_time_", "")
     logger.info(f"Выбран тип времени для редактирования: {time_type}")
