@@ -33,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "2.21"
+BOT_VERSION = "2.22"
 BOT_VERSION_DATE = "08.04.2026"
-BOT_VERSION_TIME = "20:00"
+BOT_VERSION_TIME = "20:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -2794,101 +2794,9 @@ async def settings_menu_handler(message: types.Message, state: FSMContext):
 
 # ========== ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ ДЛЯ РЕДАКТИРОВАНИЯ ==========
 
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_'), state='*')
-async def edit_notification_menu(callback: types.CallbackQuery, state: FSMContext):
-    """Обработчик для кнопки 'Изменить' - показывает меню выбора действия"""
-    notif_id = callback.data.replace('edit_', '')
-    logger.info(f"Пользователь {callback.from_user.id} открыл меню редактирования для уведомления {notif_id}")
-    
-    if notif_id not in notifications:
-        logger.warning(f"Уведомление {notif_id} не найдено")
-        await callback.answer("Уведомление не найдено")
-        return
-    
-    # Сохраняем ID в состояние
-    await state.update_data(edit_id=notif_id)
-    
-    # Создаем кнопки с действиями
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("✏️ Изменить текст", callback_data=f"do_edit_text_{notif_id}"),
-        InlineKeyboardButton("⏰ Изменить время", callback_data=f"do_edit_time_{notif_id}")
-    )
-    keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit"))
-    
-    await bot.send_message(
-        callback.from_user.id,
-        f"✏️ **Что хотите изменить в уведомлении #{notifications[notif_id].get('num', notif_id)}?**\n\n"
-        f"📝 Текст: {notifications[notif_id]['text'][:50]}...",
-        reply_markup=keyboard,
-        parse_mode='Markdown'
-    )
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith('do_edit_text_'), state='*')
-async def edit_notification_text_handler(callback: types.CallbackQuery, state: FSMContext):
-    """Обработчик для кнопки 'Изменить текст'"""
-    # Извлекаем edit_id из callback_data
-    edit_id = callback.data.replace("do_edit_text_", "")
-    logger.info(f"Пользователь {callback.from_user.id} выбрал изменение текста для уведомления {edit_id}")
-    
-    if edit_id not in notifications:
-        logger.error(f"Уведомление {edit_id} не найдено")
-        await callback.answer("❌ Уведомление не найдено")
-        return
-    
-    # Сохраняем в состояние
-    await state.update_data(edit_id=edit_id)
-    
-    await bot.send_message(
-        callback.from_user.id,
-        "✏️ **Введите новый текст уведомления:**\n\n"
-        f"📝 Старый текст: {notifications[edit_id]['text']}\n\n"
-        "⏰ **У вас есть 3 минуты**\n\n"
-        "💡 Для отмены отправьте /cancel",
-        parse_mode='Markdown'
-    )
-    await NotificationStates.waiting_for_edit_text.set()
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith('do_edit_time_'), state='*')
-async def edit_notification_time_handler(callback: types.CallbackQuery, state: FSMContext):
-    """Обработчик для кнопки 'Изменить время'"""
-    # Извлекаем edit_id из callback_data
-    edit_id = callback.data.replace("do_edit_time_", "")
-    logger.info(f"Пользователь {callback.from_user.id} выбрал изменение времени для уведомления {edit_id}")
-    
-    if edit_id not in notifications:
-        logger.error(f"Уведомление {edit_id} не найдено")
-        await callback.answer("❌ Уведомление не найдено")
-        return
-    
-    # Сохраняем в состояние
-    await state.update_data(edit_id=edit_id)
-    
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("⏰ В часах", callback_data="edit_time_hours"),
-        InlineKeyboardButton("📅 В днях", callback_data="edit_time_days"),
-        InlineKeyboardButton("📆 В месяцах", callback_data="edit_time_months"),
-        InlineKeyboardButton("🗓️ Конкретная дата", callback_data="edit_time_specific"),
-        InlineKeyboardButton("📅 Каждый день", callback_data="edit_time_every_day"),
-        InlineKeyboardButton("📆 По дням недели", callback_data="edit_time_weekdays"),
-        InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit")
-    )
-    
-    await bot.send_message(
-        callback.from_user.id,
-        "⏱️ **Выберите новый период для уведомления:**\n\n"
-        "⏰ **У вас есть 3 минуты**",
-        reply_markup=keyboard,
-        parse_mode='Markdown'
-    )
-    await NotificationStates.waiting_for_edit_time.set()
-    await callback.answer()
-
+# ВАЖНО: Сначала идут обработчики для выбора типа времени (edit_time_hours и т.д.)
+# Потом обработчики для действий (do_edit_text_*, do_edit_time_*)
+# Потом общий обработчик для меню редактирования (edit_*)
 
 @dp.callback_query_handler(lambda c: c.data in ['edit_time_hours', 'edit_time_days', 'edit_time_months', 'edit_time_specific', 'edit_time_every_day', 'edit_time_weekdays'], state=NotificationStates.waiting_for_edit_time)
 async def process_edit_time_type(callback: types.CallbackQuery, state: FSMContext):
@@ -2980,6 +2888,102 @@ async def process_edit_time_type(callback: types.CallbackQuery, state: FSMContex
         await state.update_data(edit_selected_weekdays=[])
         await NotificationStates.waiting_for_weekdays.set()
     
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith('do_edit_text_'), state='*')
+async def edit_notification_text_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Обработчик для кнопки 'Изменить текст'"""
+    # Извлекаем edit_id из callback_data
+    edit_id = callback.data.replace("do_edit_text_", "")
+    logger.info(f"Пользователь {callback.from_user.id} выбрал изменение текста для уведомления {edit_id}")
+    
+    if edit_id not in notifications:
+        logger.error(f"Уведомление {edit_id} не найдено")
+        await callback.answer("❌ Уведомление не найдено")
+        return
+    
+    # Сохраняем в состояние
+    await state.update_data(edit_id=edit_id)
+    
+    await bot.send_message(
+        callback.from_user.id,
+        "✏️ **Введите новый текст уведомления:**\n\n"
+        f"📝 Старый текст: {notifications[edit_id]['text']}\n\n"
+        "⏰ **У вас есть 3 минуты**\n\n"
+        "💡 Для отмены отправьте /cancel",
+        parse_mode='Markdown'
+    )
+    await NotificationStates.waiting_for_edit_text.set()
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith('do_edit_time_'), state='*')
+async def edit_notification_time_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Обработчик для кнопки 'Изменить время'"""
+    # Извлекаем edit_id из callback_data
+    edit_id = callback.data.replace("do_edit_time_", "")
+    logger.info(f"Пользователь {callback.from_user.id} выбрал изменение времени для уведомления {edit_id}")
+    
+    if edit_id not in notifications:
+        logger.error(f"Уведомление {edit_id} не найдено")
+        await callback.answer("❌ Уведомление не найдено")
+        return
+    
+    # Сохраняем в состояние
+    await state.update_data(edit_id=edit_id)
+    
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("⏰ В часах", callback_data="edit_time_hours"),
+        InlineKeyboardButton("📅 В днях", callback_data="edit_time_days"),
+        InlineKeyboardButton("📆 В месяцах", callback_data="edit_time_months"),
+        InlineKeyboardButton("🗓️ Конкретная дата", callback_data="edit_time_specific"),
+        InlineKeyboardButton("📅 Каждый день", callback_data="edit_time_every_day"),
+        InlineKeyboardButton("📆 По дням недели", callback_data="edit_time_weekdays"),
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit")
+    )
+    
+    await bot.send_message(
+        callback.from_user.id,
+        "⏱️ **Выберите новый период для уведомления:**\n\n"
+        "⏰ **У вас есть 3 минуты**",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+    await NotificationStates.waiting_for_edit_time.set()
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_'), state='*')
+async def edit_notification_menu(callback: types.CallbackQuery, state: FSMContext):
+    """Обработчик для кнопки 'Изменить' - показывает меню выбора действия"""
+    notif_id = callback.data.replace('edit_', '')
+    logger.info(f"Пользователь {callback.from_user.id} открыл меню редактирования для уведомления {notif_id}")
+    
+    if notif_id not in notifications:
+        logger.warning(f"Уведомление {notif_id} не найдено")
+        await callback.answer("Уведомление не найдено")
+        return
+    
+    # Сохраняем ID в состояние
+    await state.update_data(edit_id=notif_id)
+    
+    # Создаем кнопки с действиями
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("✏️ Изменить текст", callback_data=f"do_edit_text_{notif_id}"),
+        InlineKeyboardButton("⏰ Изменить время", callback_data=f"do_edit_time_{notif_id}")
+    )
+    keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit"))
+    
+    await bot.send_message(
+        callback.from_user.id,
+        f"✏️ **Что хотите изменить в уведомлении #{notifications[notif_id].get('num', notif_id)}?**\n\n"
+        f"📝 Текст: {notifications[notif_id]['text'][:50]}...",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
     await callback.answer()
 
 
