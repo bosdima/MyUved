@@ -33,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "2.9"
+BOT_VERSION = "2.10"
 BOT_VERSION_DATE = "08.04.2026"
-BOT_VERSION_TIME = "11:30"
+BOT_VERSION_TIME = "12:00"
 
 # Загрузка переменных окружения
 load_dotenv()
