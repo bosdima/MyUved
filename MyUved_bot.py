@@ -21,9 +21,9 @@ from aiogram.utils import executor
 from dotenv import load_dotenv
 
 # Версия бота
-BOT_VERSION = "2.7"
+BOT_VERSION = "2.8"
 BOT_VERSION_DATE = "08.04.2026"
-BOT_VERSION_TIME = "09:00"
+BOT_VERSION_TIME = "10:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -474,6 +474,16 @@ async def send_with_auto_delete(chat_id: int, text: str, parse_mode: str = 'Mark
     msg = await bot.send_message(chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
     asyncio.create_task(auto_delete_message(chat_id, msg.message_id, delay))
     return msg
+
+
+async def show_backup_notification(message: types.Message):
+    """Показывает уведомление о создании бэкапа на 5 секунд"""
+    if ADMIN_ID:
+        success, _, location = await create_backup(ADMIN_ID)
+        if success:
+            msg = await message.reply(f"✅ **Бэкап создан и обновлен** ({location})", parse_mode='Markdown')
+            await asyncio.sleep(5)
+            await msg.delete()
 
 
 # Инициализация папок
@@ -1569,13 +1579,7 @@ async def set_every_day_time(message: types.Message, state: FSMContext):
             parse_mode='Markdown'
         )
         
-        if ADMIN_ID:
-            success, _, location = await create_backup(ADMIN_ID)
-            if success:
-                msg = await message.reply(f"✅ **Бэкап создан** ({location})")
-                await asyncio.sleep(3)
-                await msg.delete()
-        
+        await show_backup_notification(message)
         await state.finish()
     except Exception as e:
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
@@ -1643,13 +1647,7 @@ async def set_weekday_time(message: types.Message, state: FSMContext):
             parse_mode='Markdown'
         )
         
-        if ADMIN_ID:
-            success, _, location = await create_backup(ADMIN_ID)
-            if success:
-                msg = await message.reply(f"✅ **Бэкап создан** ({location})")
-                await asyncio.sleep(3)
-                await msg.delete()
-        
+        await show_backup_notification(message)
         await state.finish()
     except Exception as e:
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
@@ -1689,13 +1687,7 @@ async def save_notification(message: types.Message, state: FSMContext, notify_ti
         parse_mode='Markdown'
     )
     
-    if ADMIN_ID:
-        success, _, location = await create_backup(ADMIN_ID)
-        if success:
-            msg = await message.reply(f"✅ **Бэкап создан** ({location})")
-            await asyncio.sleep(3)
-            await msg.delete()
-    
+    await show_backup_notification(message)
     await state.finish()
 
 
@@ -1849,6 +1841,9 @@ async def snooze_time_selected(callback: types.CallbackQuery, state: FSMContext)
         f"ℹ️ Уведомление будет повторяться каждый час, пока вы не отметите его как выполненное.",
         parse_mode='Markdown'
     )
+    
+    # Показываем уведомление о бэкапе
+    await show_backup_notification(callback.message)
     
     try:
         await bot.delete_message(callback.from_user.id, callback.message.message_id)
@@ -2076,6 +2071,7 @@ async def snooze_set_every_day_time(message: types.Message, state: FSMContext):
             parse_mode='Markdown'
         )
         
+        await show_backup_notification(message)
         await state.finish()
     except Exception as e:
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
@@ -2136,6 +2132,7 @@ async def snooze_set_weekday_time(message: types.Message, state: FSMContext):
             parse_mode='Markdown'
         )
         
+        await show_backup_notification(message)
         await state.finish()
     except Exception as e:
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
@@ -2182,6 +2179,7 @@ async def snooze_set_hours(message: types.Message, state: FSMContext):
             parse_mode='Markdown'
         )
         
+        await show_backup_notification(message)
         await state.finish()
     except ValueError:
         await message.reply("❌ **Ошибка!** Введите корректное число часов.", parse_mode='Markdown')
@@ -2228,6 +2226,7 @@ async def snooze_set_days(message: types.Message, state: FSMContext):
             parse_mode='Markdown'
         )
         
+        await show_backup_notification(message)
         await state.finish()
     except ValueError:
         await message.reply("❌ **Ошибка!** Введите корректное число дней.", parse_mode='Markdown')
@@ -2275,6 +2274,7 @@ async def snooze_set_months(message: types.Message, state: FSMContext):
             parse_mode='Markdown'
         )
         
+        await show_backup_notification(message)
         await state.finish()
     except ValueError:
         await message.reply("❌ **Ошибка!** Введите корректное число месяцев.", parse_mode='Markdown')
@@ -2334,6 +2334,7 @@ async def snooze_set_specific_date(message: types.Message, state: FSMContext):
             parse_mode='Markdown'
         )
         
+        await show_backup_notification(message)
         await state.finish()
     except Exception as e:
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
@@ -2377,8 +2378,7 @@ async def handle_complete(callback: types.CallbackQuery):
             parse_mode='Markdown'
         )
         
-        if ADMIN_ID:
-            await create_backup(ADMIN_ID)
+        await show_backup_notification(callback.message)
     else:
         await callback.answer("Уведомление уже обработано")
     
@@ -2438,8 +2438,7 @@ async def handle_complete_today(callback: types.CallbackQuery):
             parse_mode='Markdown'
         )
         
-        if ADMIN_ID:
-            await create_backup(ADMIN_ID)
+        await show_backup_notification(callback.message)
     else:
         await callback.answer("Уведомление уже обработано")
     
@@ -2603,7 +2602,7 @@ async def settings_menu_handler(message: types.Message, state: FSMContext):
 
 
 # Обработчики для редактирования уведомлений
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_'))
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_'), state='*')
 async def edit_notification_start(callback: types.CallbackQuery, state: FSMContext):
     notif_id = callback.data.replace('edit_', '')
     
@@ -2631,19 +2630,31 @@ async def edit_notification_start(callback: types.CallbackQuery, state: FSMConte
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "edit_text", state="*")
+@dp.callback_query_handler(lambda c: c.data == "edit_text", state='*')
 async def edit_notification_text(callback: types.CallbackQuery, state: FSMContext):
+    # Проверяем, есть ли edit_id в состоянии
+    data = await state.get_data()
+    if not data.get('edit_id'):
+        await callback.answer("❌ Ошибка: уведомление не выбрано")
+        return
+    
     await bot.send_message(
         callback.from_user.id,
-        "✏️ **Введите новый текст уведомления:**\n\n⏰ **У вас есть 3 минуты**",
+        "✏️ **Введите новый текст уведомления:**\n\n⏰ **У вас есть 3 минуты**\n\n💡 Для отмены отправьте /cancel",
         parse_mode='Markdown'
     )
     await NotificationStates.waiting_for_edit_text.set()
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "edit_time", state="*")
+@dp.callback_query_handler(lambda c: c.data == "edit_time", state='*')
 async def edit_notification_time(callback: types.CallbackQuery, state: FSMContext):
+    # Проверяем, есть ли edit_id в состоянии
+    data = await state.get_data()
+    if not data.get('edit_id'):
+        await callback.answer("❌ Ошибка: уведомление не выбрано")
+        return
+    
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
         InlineKeyboardButton("⏰ В часах", callback_data="time_hours"),
@@ -2669,19 +2680,20 @@ async def save_edited_text(message: types.Message, state: FSMContext):
     data = await state.get_data()
     notif_id = data.get('edit_id')
     
-    if notif_id and notif_id in notifications:
-        notifications[notif_id]['text'] = message.text
-        save_data()
-        await message.reply(f"✅ **Текст уведомления изменен!**", parse_mode='Markdown')
-        if ADMIN_ID:
-            await create_backup(ADMIN_ID)
-    else:
+    if not notif_id or notif_id not in notifications:
         await message.reply("❌ **Уведомление не найдено!**", parse_mode='Markdown')
+        await state.finish()
+        return
     
+    notifications[notif_id]['text'] = message.text
+    save_data()
+    await message.reply(f"✅ **Текст уведомления изменен!**", parse_mode='Markdown')
+    
+    await show_backup_notification(message)
     await state.finish()
 
 
-@dp.callback_query_handler(lambda c: c.data == "cancel_edit", state="*")
+@dp.callback_query_handler(lambda c: c.data == "cancel_edit", state='*')
 async def cancel_edit(callback: types.CallbackQuery, state: FSMContext):
     await state.finish()
     await bot.send_message(callback.from_user.id, "✅ **Редактирование отменено**", parse_mode='Markdown')
@@ -2712,8 +2724,7 @@ async def handle_delete_notification(callback: types.CallbackQuery):
         
         await bot.send_message(callback.from_user.id, f"✅ **Уведомление #{notif_num} удалено**", parse_mode='Markdown')
         
-        if ADMIN_ID:
-            await create_backup(ADMIN_ID)
+        await show_backup_notification(callback.message)
     else:
         await callback.answer("Уведомление уже удалено")
     
@@ -2757,6 +2768,7 @@ async def save_max_backups(message: types.Message, state: FSMContext):
             config['max_backups'] = max_backups
             save_data()
             await message.reply(f"✅ **Установлено:** `{max_backups}`", parse_mode='Markdown')
+            await show_backup_notification(message)
         else:
             await message.reply("❌ **Ошибка!** Число от 1 до 20", parse_mode='Markdown')
     except ValueError:
@@ -2784,6 +2796,7 @@ async def save_check_time(message: types.Message, state: FSMContext):
         config['daily_check_time'] = message.text
         save_data()
         await message.reply(f"✅ **Время установлено:** `{message.text}`", parse_mode='Markdown')
+        await show_backup_notification(message)
     except ValueError:
         await message.reply("❌ **Ошибка!** Формат `ЧЧ:ММ`", parse_mode='Markdown')
     
@@ -2828,7 +2841,7 @@ async def manual_backup_settings(callback: types.CallbackQuery, state: FSMContex
     
     if success:
         await status_msg.edit_text(f"✅ **Бэкап создан** ({location})", parse_mode='Markdown')
-        await asyncio.sleep(2)
+        await asyncio.sleep(5)
         await status_msg.delete()
     else:
         await status_msg.edit_text("❌ **Ошибка создания бэкапа!**", parse_mode='Markdown')
@@ -3145,6 +3158,7 @@ async def receive_backup_file(message: types.Message, state: FSMContext):
                 f"📝 Уведомлений: {len(notifications)}",
                 parse_mode='Markdown'
             )
+            await show_backup_notification(message)
         else:
             await message.reply("❌ **Неверный формат бэкапа!**", parse_mode='Markdown')
     except Exception as e:
