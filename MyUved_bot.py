@@ -33,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "2.24"
+BOT_VERSION = "2.25"
 BOT_VERSION_DATE = "09.04.2026"
-BOT_VERSION_TIME = "10:30"
+BOT_VERSION_TIME = "11:00"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -164,10 +164,17 @@ def parse_date(date_str: str) -> Optional[datetime]:
 
 
 def get_next_weekday(target_weekdays: List[int], hour: int, minute: int, from_date: datetime = None) -> Optional[datetime]:
-    """Получает следующую дату по дням недели"""
+    """Получает следующую дату по дням недели (включая сегодня, если время еще не прошло)"""
     now = from_date or get_current_time()
     tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
     
+    # Проверяем сегодняшний день
+    if now.weekday() in target_weekdays:
+        today_trigger = tz.localize(datetime(now.year, now.month, now.day, hour, minute))
+        if today_trigger > now:
+            return today_trigger
+    
+    # Ищем в следующих днях
     for i in range(1, 15):
         next_date = now + timedelta(days=i)
         if next_date.weekday() in target_weekdays:
@@ -183,7 +190,7 @@ def get_next_month_day(target_day: int, hour: int, minute: int, from_date: datet
     now = from_date or get_current_time()
     tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
     
-    # Пробуем в текущем месяце
+    # Проверяем текущий месяц
     try:
         next_date = now.replace(day=target_day, hour=hour, minute=minute, second=0, microsecond=0)
         if next_date > now:
@@ -195,12 +202,16 @@ def get_next_month_day(target_day: int, hour: int, minute: int, from_date: datet
     next_month = now.replace(day=1) + timedelta(days=32)
     try:
         next_date = next_month.replace(day=target_day, hour=hour, minute=minute, second=0, microsecond=0)
-        return tz.localize(next_date)
+        if next_date > now:
+            return tz.localize(next_date)
     except:
         # Если дня нет в месяце (например 31 февраля), берем последний день месяца
         last_day = (next_month.replace(month=next_month.month + 1, day=1) - timedelta(days=1)).day
         next_date = next_month.replace(day=last_day, hour=hour, minute=minute, second=0, microsecond=0)
-        return tz.localize(next_date)
+        if next_date > now:
+            return tz.localize(next_date)
+    
+    return None
 
 
 def get_auth_url() -> str:
@@ -781,6 +792,7 @@ async def check_notifications():
                         minute = notif.get('repeat_minute', 0)
                         today_trigger = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
                         
+                        # Проверяем, нужно ли сработать сегодня
                         if last_trigger_time is None or last_trigger_time.date() < now.date():
                             if now >= today_trigger:
                                 should_trigger = True
@@ -790,54 +802,22 @@ async def check_notifications():
                         else:
                             next_time = today_trigger + timedelta(days=1)
                     
-                    elif repeat_type == 'every_week':
-                        hour = notif.get('repeat_hour', 0)
-                        minute = notif.get('repeat_minute', 0)
-                        weekday = notif.get('repeat_weekday', 0)
-                        
-                        days_ahead = (weekday - now.weekday()) % 7
-                        if days_ahead == 0:
-                            days_ahead = 7
-                        next_trigger = now.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=days_ahead)
-                        
-                        if last_trigger_time is None or last_trigger_time < next_trigger - timedelta(days=7):
-                            if now >= next_trigger - timedelta(days=7):
-                                should_trigger = True
-                                next_time = next_trigger
-                            else:
-                                next_time = next_trigger
-                        else:
-                            next_time = next_trigger
-                    
-                    elif repeat_type == 'every_month':
-                        hour = notif.get('repeat_hour', 0)
-                        minute = notif.get('repeat_minute', 0)
-                        month_day = notif.get('repeat_month_day', 1)
-                        
-                        next_time = get_next_month_day(month_day, hour, minute, now)
-                        if next_time:
-                            if last_trigger_time is None or last_trigger_time.month != now.month or last_trigger_time.year != now.year:
-                                if now >= next_time:
-                                    should_trigger = True
-                                    next_time = get_next_month_day(month_day, hour, minute, next_time + timedelta(days=1))
-                    
                     elif repeat_type == 'weekdays':
                         hour = notif.get('repeat_hour', 0)
                         minute = notif.get('repeat_minute', 0)
                         weekdays_list = notif.get('weekdays_list', [])
                         
-                        if now.weekday() in weekdays_list:
-                            today_trigger = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                            if last_trigger_time is None or last_trigger_time.date() < now.date():
-                                if now >= today_trigger:
+                        # Получаем следующее время для срабатывания
+                        next_time = get_next_weekday(weekdays_list, hour, minute, now)
+                        
+                        if next_time:
+                            # Проверяем, нужно ли сработать сейчас
+                            if last_trigger_time is None or last_trigger_time < next_time:
+                                # Если следующее время равно или меньше текущего, значит нужно сработать
+                                if next_time <= now:
                                     should_trigger = True
-                                    next_time = get_next_weekday(weekdays_list, hour, minute, today_trigger + timedelta(days=1))
-                                else:
-                                    next_time = today_trigger
-                            else:
-                                next_time = get_next_weekday(weekdays_list, hour, minute, now + timedelta(days=1))
-                        else:
-                            next_time = get_next_weekday(weekdays_list, hour, minute, now)
+                                    # Получаем следующее после текущего
+                                    next_time = get_next_weekday(weekdays_list, hour, minute, now + timedelta(seconds=1))
                     
                     if should_trigger:
                         is_repeat = notif.get('is_repeat', False)
@@ -1996,6 +1976,7 @@ async def snooze_time_selected(callback: types.CallbackQuery, state: FSMContext)
     notifications[notif_id]['notified'] = False
     notifications[notif_id]['is_repeat'] = True
     notifications[notif_id]['repeat_count'] = repeat_count + 1
+    notifications[notif_id]['repeat_type'] = 'no'
     
     save_data()
     logger.info(f"Уведомление {notif_id} отложено на {value} {unit}, повторение #{repeat_count + 1}")
@@ -2659,26 +2640,6 @@ async def list_notifications_handler(message: types.Message, state: FSMContext):
                 if next_time.tzinfo is None:
                     next_time = tz.localize(next_time)
                 next_time_str = f"\n⏰ **Следующее:** {next_time.strftime('%d.%m.%Y в %H:%M')}"
-        elif repeat_type == 'every_week':
-            hour = notif.get('repeat_hour', 0)
-            minute = notif.get('repeat_minute', 0)
-            weekday_name = WEEKDAYS_NAMES.get(notif.get('repeat_weekday', 0), '')
-            repeat_text = f"\n🔄 **Повтор:** Каждую неделю в {weekday_name} {hour:02d}:{minute:02d}"
-            if notif.get('next_time'):
-                next_time = datetime.fromisoformat(notif['next_time'])
-                if next_time.tzinfo is None:
-                    next_time = tz.localize(next_time)
-                next_time_str = f"\n⏰ **Следующее:** {next_time.strftime('%d.%m.%Y в %H:%M')}"
-        elif repeat_type == 'every_month':
-            hour = notif.get('repeat_hour', 0)
-            minute = notif.get('repeat_minute', 0)
-            month_day = notif.get('repeat_month_day', 1)
-            repeat_text = f"\n🔄 **Повтор:** Каждый месяц {month_day}-го числа в {hour:02d}:{minute:02d}"
-            if notif.get('next_time'):
-                next_time = datetime.fromisoformat(notif['next_time'])
-                if next_time.tzinfo is None:
-                    next_time = tz.localize(next_time)
-                next_time_str = f"\n⏰ **Следующее:** {next_time.strftime('%d.%m.%Y в %H:%M')}"
         elif repeat_type == 'weekdays':
             hour = notif.get('repeat_hour', 0)
             minute = notif.get('repeat_minute', 0)
@@ -2791,10 +2752,6 @@ async def settings_menu_handler(message: types.Message, state: FSMContext):
 
 # ========== ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ ДЛЯ РЕДАКТИРОВАНИЯ ==========
 
-# ВАЖНО: Сначала идут обработчики для выбора типа времени (edit_time_hours и т.д.)
-# Потом обработчики для действий (do_edit_text_*, do_edit_time_*)
-# Потом общий обработчик для меню редактирования (edit_*)
-
 @dp.callback_query_handler(lambda c: c.data in ['edit_time_hours', 'edit_time_days', 'edit_time_months', 'edit_time_specific', 'edit_time_every_day', 'edit_time_weekdays'], state=NotificationStates.waiting_for_edit_time)
 async def process_edit_time_type(callback: types.CallbackQuery, state: FSMContext):
     time_type = callback.data.replace("edit_time_", "")
@@ -2891,7 +2848,6 @@ async def process_edit_time_type(callback: types.CallbackQuery, state: FSMContex
 @dp.callback_query_handler(lambda c: c.data.startswith('do_edit_text_'), state='*')
 async def edit_notification_text_handler(callback: types.CallbackQuery, state: FSMContext):
     """Обработчик для кнопки 'Изменить текст'"""
-    # Извлекаем edit_id из callback_data
     edit_id = callback.data.replace("do_edit_text_", "")
     logger.info(f"Пользователь {callback.from_user.id} выбрал изменение текста для уведомления {edit_id}")
     
@@ -2900,7 +2856,6 @@ async def edit_notification_text_handler(callback: types.CallbackQuery, state: F
         await callback.answer("❌ Уведомление не найдено")
         return
     
-    # Сохраняем в состояние
     await state.update_data(edit_id=edit_id)
     
     await bot.send_message(
@@ -2918,7 +2873,6 @@ async def edit_notification_text_handler(callback: types.CallbackQuery, state: F
 @dp.callback_query_handler(lambda c: c.data.startswith('do_edit_time_'), state='*')
 async def edit_notification_time_handler(callback: types.CallbackQuery, state: FSMContext):
     """Обработчик для кнопки 'Изменить время'"""
-    # Извлекаем edit_id из callback_data
     edit_id = callback.data.replace("do_edit_time_", "")
     logger.info(f"Пользователь {callback.from_user.id} выбрал изменение времени для уведомления {edit_id}")
     
@@ -2927,7 +2881,6 @@ async def edit_notification_time_handler(callback: types.CallbackQuery, state: F
         await callback.answer("❌ Уведомление не найдено")
         return
     
-    # Сохраняем в состояние
     await state.update_data(edit_id=edit_id)
     
     keyboard = InlineKeyboardMarkup(row_width=2)
@@ -2963,10 +2916,8 @@ async def edit_notification_menu(callback: types.CallbackQuery, state: FSMContex
         await callback.answer("Уведомление не найдено")
         return
     
-    # Сохраняем ID в состояние
     await state.update_data(edit_id=notif_id)
     
-    # Создаем кнопки с действиями
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
         InlineKeyboardButton("✏️ Изменить текст", callback_data=f"do_edit_text_{notif_id}"),
