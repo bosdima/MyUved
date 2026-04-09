@@ -9,7 +9,6 @@ from urllib.parse import urlencode
 from io import BytesIO
 import pytz
 import re
-import hashlib
 
 import aiohttp
 import requests
@@ -34,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "3.00"
+BOT_VERSION = "3.10"
 BOT_VERSION_DATE = "09.04.2026"
-BOT_VERSION_TIME = "12:00"
+BOT_VERSION_TIME = "15:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -71,12 +70,10 @@ config: Dict = {}
 user_tokens: Dict[int, str] = {}
 notifications_enabled = True
 calendar_sync: Dict = {}  # Хранит соответствие ID уведомлений и событий календаря
-calendar_events: Dict = {}  # Кэш событий из календаря
 
 # URL для API
 YANDEX_API_BASE = "https://cloud-api.yandex.net/v1/disk"
 YANDEX_OAUTH_URL = "https://oauth.yandex.ru/authorize"
-YANDEX_CALENDAR_API = "https://calendar.yandex.ru/api/v1"
 
 # Часовые пояса
 TIMEZONES = {
@@ -99,13 +96,6 @@ WEEKDAYS_BUTTONS = [
 
 WEEKDAYS_NAMES = {
     0: "Понедельник", 1: "Вторник", 2: "Среда", 3: "Четверг", 4: "Пятница", 5: "Суббота", 6: "Воскресенье"
-}
-
-# Названия месяцев для календаря
-MONTHS_NAMES = {
-    1: "января", 2: "февраля", 3: "марта", 4: "апреля",
-    5: "мая", 6: "июня", 7: "июля", 8: "августа",
-    9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
 }
 
 
@@ -198,10 +188,21 @@ def get_next_weekday(target_weekdays: List[int], hour: int, minute: int, from_da
 
 
 def get_auth_url() -> str:
+    """Возвращает URL для авторизации с запросом прав на календарь и диск"""
     params = {
         "response_type": "code",
         "client_id": CLIENT_ID,
-        "redirect_uri": REDIRECT_URI
+        "redirect_uri": REDIRECT_URI,
+        "scope": "cloud_api:disk.write,cloud_api:disk.read,calendar:all"  # Запрашиваем права на календарь
+    }
+    return f"{YANDEX_OAUTH_URL}?{urlencode(params)}"
+
+
+def get_token_url() -> str:
+    params = {
+        "response_type": "token",
+        "client_id": CLIENT_ID,
+        "scope": "cloud_api:disk.write,cloud_api:disk.read,calendar:all"
     }
     return f"{YANDEX_OAUTH_URL}?{urlencode(params)}"
 
@@ -220,7 +221,9 @@ async def get_access_token(auth_code: str) -> Optional[str]:
             async with session.post(url, data=data) as response:
                 if response.status == 200:
                     result = await response.json()
-                    return result.get("access_token")
+                    token = result.get("access_token")
+                    logger.info(f"Токен получен успешно")
+                    return token
                 else:
                     error_text = await response.text()
                     logger.error(f"Ошибка получения токена: {response.status} - {error_text}")
@@ -231,7 +234,7 @@ async def get_access_token(auth_code: str) -> Optional[str]:
 
 
 class YandexCalendarAPI:
-    """Класс для работы с Яндекс Календарём"""
+    """Класс для работы с Яндекс Календарём (исправленная версия)"""
     
     def __init__(self, token: str):
         self.token = token
@@ -239,17 +242,54 @@ class YandexCalendarAPI:
             "Authorization": f"OAuth {token}",
             "Content-Type": "application/json"
         }
-        self.base_url = "https://calendar.yandex.ru/api/v1"
+        # Используем правильный URL для API Яндекс.Календаря
+        self.base_url = "https://caldav.yandex.ru"
+        self.calendar_url = None
+        self.calendar_id = None
     
-    async def get_calendars(self) -> List[Dict]:
-        """Получает список календарей пользователя"""
+    async def get_calendar_list(self) -> List[Dict]:
+        """Получает список календарей пользователя через CalDAV"""
         try:
-            url = f"{self.base_url}/calendars"
+            # Получаем список календарей через PROPFIND
+            url = f"{self.base_url}/calendars/"
+            
+            # XML запрос для получения списка календарей
+            body = """<?xml version="1.0" encoding="utf-8" ?>
+<d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">
+  <d:prop>
+    <d:displayname />
+    <d:resourcetype />
+    <cs:getctag />
+  </d:prop>
+</d:propfind>"""
+            
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=self.headers) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        return data.get('calendars', [])
+                async with session.request("PROPFIND", url, headers=self.headers, data=body) as response:
+                    if response.status == 207:  # Multi-Status
+                        text = await response.text()
+                        # Парсим XML ответ (упрощённо)
+                        calendars = []
+                        import xml.etree.ElementTree as ET
+                        root = ET.fromstring(text)
+                        
+                        # Ищем все href
+                        for response_elem in root.findall('.//{DAV:}response'):
+                            href_elem = response_elem.find('{DAV:}href')
+                            if href_elem is not None and href_elem.text:
+                                href = href_elem.text
+                                # Ищем displayname
+                                propstat = response_elem.find('.//{DAV:}propstat')
+                                if propstat is not None:
+                                    displayname_elem = propstat.find('.//{DAV:}displayname')
+                                    displayname = displayname_elem.text if displayname_elem is not None else "Без названия"
+                                    calendars.append({
+                                        'id': href,
+                                        'name': displayname,
+                                        'url': href
+                                    })
+                        
+                        logger.info(f"Найдено календарей: {len(calendars)}")
+                        return calendars
                     else:
                         logger.error(f"Ошибка получения календарей: {response.status}")
                         return []
@@ -257,58 +297,61 @@ class YandexCalendarAPI:
             logger.error(f"Ошибка получения календарей: {e}")
             return []
     
-    async def get_default_calendar_id(self) -> Optional[str]:
-        """Получает ID календаря по умолчанию"""
-        calendars = await self.get_calendars()
-        for calendar in calendars:
-            if calendar.get('is_default', False):
-                return calendar.get('id')
-        return calendars[0].get('id') if calendars else None
+    async def get_default_calendar(self) -> Optional[Dict]:
+        """Получает календарь по умолчанию"""
+        calendars = await self.get_calendar_list()
+        if calendars:
+            # Ищем календарь с именем "Календарь" или берём первый
+            for cal in calendars:
+                if cal['name'] == 'Календарь' or cal['name'] == 'Calendar':
+                    return cal
+            return calendars[0]
+        return None
     
     async def create_event(self, summary: str, start_time: datetime, end_time: datetime = None,
-                           description: str = "", calendar_id: str = None) -> Optional[str]:
-        """Создаёт событие в календаре"""
+                           description: str = "") -> Optional[str]:
+        """Создаёт событие в календаре через CalDAV"""
         try:
-            if calendar_id is None:
-                calendar_id = await self.get_default_calendar_id()
-                if not calendar_id:
-                    logger.error("Не найден календарь по умолчанию")
-                    return None
+            calendar = await self.get_default_calendar()
+            if not calendar:
+                logger.error("Не найден календарь")
+                return None
             
             if end_time is None:
                 end_time = start_time + timedelta(hours=1)
             
-            # Форматируем время для API Яндекс.Календаря
-            start_str = start_time.strftime("%Y-%m-%dT%H:%M:%S%z")
-            end_str = end_time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            # Форматируем время для iCalendar формата
+            tz = config.get('timezone', 'Europe/Moscow')
             
-            url = f"{self.base_url}/calendars/{calendar_id}/events"
-            event_data = {
-                "summary": summary[:255],  # Ограничение длины
-                "description": description[:1000],
-                "start": {
-                    "dateTime": start_str,
-                    "timeZone": config.get('timezone', 'Europe/Moscow')
-                },
-                "end": {
-                    "dateTime": end_str,
-                    "timeZone": config.get('timezone', 'Europe/Moscow')
-                },
-                "reminders": [
-                    {
-                        "method": "popup",
-                        "minutes": 15
-                    }
-                ]
-            }
+            # Создаём iCalendar событие
+            ical_body = f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//MyUved Bot//RU
+BEGIN:VEVENT
+UID:{datetime.now().timestamp()}@myuved.bot
+DTSTAMP:{start_time.strftime('%Y%m%dT%H%M%S')}
+DTSTART:{start_time.strftime('%Y%m%dT%H%M%S')}
+DTEND:{end_time.strftime('%Y%m%dT%H%M%S')}
+SUMMARY:{summary}
+DESCRIPTION:{description}
+END:VEVENT
+END:VCALENDAR"""
+            
+            # URL для создания события
+            event_url = calendar['url']
+            if not event_url.endswith('/'):
+                event_url += '/'
+            
+            # Генерируем уникальное имя для события
+            import uuid
+            event_filename = f"{uuid.uuid4()}.ics"
+            full_url = f"{event_url}{event_filename}"
             
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=self.headers, json=event_data) as response:
-                    if response.status in [200, 201]:
-                        data = await response.json()
-                        event_id = data.get('id')
-                        logger.info(f"Создано событие в календаре: {summary}, ID: {event_id}")
-                        return event_id
+                async with session.put(full_url, headers=self.headers, data=ical_body) as response:
+                    if response.status in [200, 201, 204]:
+                        logger.info(f"Создано событие в календаре: {summary}")
+                        return full_url
                     else:
                         error_text = await response.text()
                         logger.error(f"Ошибка создания события: {response.status} - {error_text}")
@@ -317,154 +360,70 @@ class YandexCalendarAPI:
             logger.error(f"Ошибка создания события: {e}")
             return None
     
-    async def update_event(self, event_id: str, summary: str = None, start_time: datetime = None,
-                           end_time: datetime = None, description: str = None, calendar_id: str = None) -> bool:
-        """Обновляет событие в календаре"""
-        try:
-            if calendar_id is None:
-                calendar_id = await self.get_default_calendar_id()
-                if not calendar_id:
-                    return False
-            
-            # Сначала получаем текущее событие
-            url_get = f"{self.base_url}/calendars/{calendar_id}/events/{event_id}"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url_get, headers=self.headers) as response:
-                    if response.status != 200:
-                        return False
-                    event = await response.json()
-            
-            # Обновляем поля
-            if summary is not None:
-                event['summary'] = summary[:255]
-            if description is not None:
-                event['description'] = description[:1000]
-            if start_time is not None:
-                event['start']['dateTime'] = start_time.strftime("%Y-%m-%dT%H:%M:%S%z")
-            if end_time is not None:
-                event['end']['dateTime'] = end_time.strftime("%Y-%m-%dT%H:%M:%S%z")
-            elif start_time is not None:
-                event['end']['dateTime'] = (start_time + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S%z")
-            
-            url_put = f"{self.base_url}/calendars/{calendar_id}/events/{event_id}"
-            async with session.put(url_put, headers=self.headers, json=event) as put_response:
-                return put_response.status in [200, 201]
-        except Exception as e:
-            logger.error(f"Ошибка обновления события: {e}")
-            return False
-    
-    async def delete_event(self, event_id: str, calendar_id: str = None) -> bool:
+    async def delete_event(self, event_url: str) -> bool:
         """Удаляет событие из календаря"""
         try:
-            if calendar_id is None:
-                calendar_id = await self.get_default_calendar_id()
-                if not calendar_id:
-                    return False
-            
-            url = f"{self.base_url}/calendars/{calendar_id}/events/{event_id}"
             async with aiohttp.ClientSession() as session:
-                async with session.delete(url, headers=self.headers) as response:
+                async with session.delete(event_url, headers=self.headers) as response:
                     success = response.status in [200, 204]
                     if success:
-                        logger.info(f"Удалено событие из календаря: {event_id}")
+                        logger.info(f"Удалено событие: {event_url}")
                     return success
         except Exception as e:
             logger.error(f"Ошибка удаления события: {e}")
             return False
     
-    async def get_events(self, from_date: datetime, to_date: datetime, calendar_id: str = None) -> List[Dict]:
-        """Получает события из календаря за период"""
+    async def update_event(self, event_url: str, summary: str = None, start_time: datetime = None,
+                           end_time: datetime = None, description: str = None) -> bool:
+        """Обновляет событие в календаре"""
         try:
-            if calendar_id is None:
-                calendar_id = await self.get_default_calendar_id()
-                if not calendar_id:
-                    return []
-            
-            url = f"{self.base_url}/calendars/{calendar_id}/events"
-            params = {
-                "from": from_date.isoformat(),
-                "to": to_date.isoformat()
-            }
-            
+            # Сначала получаем текущее событие
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=self.headers, params=params) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        return data.get('events', [])
-                    else:
-                        return []
+                async with session.get(event_url, headers=self.headers) as response:
+                    if response.status != 200:
+                        return False
+                    current_ical = await response.text()
+            
+            # Парсим и обновляем (упрощённо - пересоздаём)
+            # Для простоты удалим и создадим заново
+            # Но сохраним UID если нужно
+            await self.delete_event(event_url)
+            
+            # Создаём новое событие
+            calendar = await self.get_default_calendar()
+            if not calendar:
+                return False
+            
+            if end_time is None and start_time is not None:
+                end_time = start_time + timedelta(hours=1)
+            
+            if summary is None:
+                summary = "Уведомление"
+            
+            # Создаём новое событие
+            import uuid
+            ical_body = f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//MyUved Bot//RU
+BEGIN:VEVENT
+UID:{uuid.uuid4()}@myuved.bot
+DTSTAMP:{datetime.now().strftime('%Y%m%dT%H%M%S')}
+DTSTART:{start_time.strftime('%Y%m%dT%H%M%S') if start_time else datetime.now().strftime('%Y%m%dT%H%M%S')}
+DTEND:{end_time.strftime('%Y%m%dT%H%M%S') if end_time else (datetime.now() + timedelta(hours=1)).strftime('%Y%m%dT%H%M%S')}
+SUMMARY:{summary}
+DESCRIPTION:{description or ""}
+END:VEVENT
+END:VCALENDAR"""
+            
+            # Генерируем новое имя
+            new_filename = f"{uuid.uuid4()}.ics"
+            full_url = f"{calendar['url']}{new_filename}"
+            
+            async with session.put(full_url, headers=self.headers, data=ical_body) as put_response:
+                return put_response.status in [200, 201, 204]
         except Exception as e:
-            logger.error(f"Ошибка получения событий: {e}")
-            return []
-    
-    async def sync_calendar_to_bot(self) -> int:
-        """Синхронизирует события из календаря в бот (импорт)"""
-        synced_count = 0
-        
-        try:
-            # Получаем события за следующие 30 дней
-            now = get_current_time()
-            end_date = now + timedelta(days=30)
-            
-            events = await self.get_events(now, end_date)
-            
-            for event in events:
-                event_id = event.get('id')
-                summary = event.get('summary', '')
-                start_time_str = event.get('start', {}).get('dateTime')
-                
-                if not start_time_str:
-                    continue
-                
-                # Парсим время
-                try:
-                    start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
-                except:
-                    continue
-                
-                # Проверяем, есть ли уже такое событие в синхронизации
-                existing_notif_id = None
-                for nid, sync_data in calendar_sync.items():
-                    if sync_data.get('calendar_event_id') == event_id:
-                        existing_notif_id = nid
-                        break
-                
-                if existing_notif_id is None:
-                    # Создаём новое уведомление из события календаря
-                    next_num = len(notifications) + 1
-                    notif_id = str(next_num)
-                    
-                    # Преобразуем время в локальное
-                    tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
-                    local_time = start_time.astimezone(tz)
-                    
-                    notifications[notif_id] = {
-                        'text': summary,
-                        'time': start_time.isoformat(),
-                        'created': get_current_time().isoformat(),
-                        'notified': False,
-                        'num': next_num,
-                        'repeat_type': 'no',
-                        'is_repeat': False,
-                        'repeat_count': 0,
-                        'from_calendar': True
-                    }
-                    
-                    calendar_sync[notif_id] = {
-                        'calendar_event_id': event_id,
-                        'last_sync': get_current_time().isoformat()
-                    }
-                    
-                    synced_count += 1
-                    logger.info(f"Импортировано событие из календаря: {summary}")
-            
-            save_calendar_sync()
-            save_data()
-            return synced_count
-            
-        except Exception as e:
-            logger.error(f"Ошибка синхронизации календаря в бот: {e}")
-            return 0
+            logger.error(f"Ошибка обновления события: {e}")
+            return False
 
 
 class YandexDiskAPI:
@@ -717,29 +676,52 @@ def get_calendar_sync_enabled() -> bool:
     return config.get('calendar_sync_enabled', False)
 
 
+async def test_calendar_access(user_id: int) -> tuple:
+    """Тестирует доступ к календарю"""
+    token = get_user_token(user_id)
+    if not token:
+        return False, "Нет токена авторизации"
+    
+    try:
+        calendar_api = YandexCalendarAPI(token)
+        calendars = await calendar_api.get_calendar_list()
+        if calendars:
+            return True, f"Доступ к календарю есть. Найдено календарей: {len(calendars)}"
+        else:
+            return False, "Не удалось получить список календарей. Возможно, нет прав доступа."
+    except Exception as e:
+        logger.error(f"Ошибка теста доступа к календарю: {e}")
+        return False, f"Ошибка: {str(e)}"
+
+
 async def sync_notification_to_calendar(notif_id: str, action: str = 'create'):
     """Синхронизирует уведомление с Яндекс Календарём"""
     if not get_calendar_sync_enabled():
+        logger.debug(f"Синхронизация с календарём отключена, пропускаем {action} для {notif_id}")
         return
     
     if not ADMIN_ID:
+        logger.warning("ADMIN_ID не задан, синхронизация с календарём невозможна")
         return
     
     token = get_user_token(ADMIN_ID)
     if not token:
+        logger.warning("Нет токена для синхронизации с календарём")
         return
     
     notif = notifications.get(notif_id)
     if not notif:
+        logger.warning(f"Уведомление {notif_id} не найдено для синхронизации")
         return
     
     calendar_api = YandexCalendarAPI(token)
     
     try:
         if action == 'create':
-            # Создаём событие в календаре
+            # Получаем время события
             event_time_str = notif.get('time')
             if not event_time_str:
+                logger.warning(f"Уведомление {notif_id} не имеет времени")
                 return
             
             event_time = datetime.fromisoformat(event_time_str)
@@ -760,30 +742,31 @@ async def sync_notification_to_calendar(notif_id: str, action: str = 'create'):
                 days = [WEEKDAYS_NAMES[d] for d in notif.get('weekdays_list', [])]
                 repeat_info = f"Повтор: по {', '.join(days)} в {hour:02d}:{minute:02d}"
             
-            description = f"Уведомление из бота\nТекст: {notif['text']}\n"
+            description = f"Уведомление из бота\nТекст: {notif['text']}"
             if repeat_info:
                 description += f"\n{repeat_info}"
-            description += f"\n\nСоздано: {get_current_time().strftime('%d.%m.%Y %H:%M')}"
             
-            event_id = await calendar_api.create_event(
+            event_url = await calendar_api.create_event(
                 summary=notif['text'][:100],
                 start_time=event_time,
                 description=description
             )
             
-            if event_id:
+            if event_url:
                 calendar_sync[notif_id] = {
-                    'calendar_event_id': event_id,
-                    'last_sync': get_current_time().isoformat()
+                    'calendar_event_url': event_url,
+                    'last_sync': get_current_time().isoformat(),
+                    'event_time': event_time.isoformat()
                 }
                 save_calendar_sync()
-                logger.info(f"Уведомление {notif_id} синхронизировано с календарём, событие: {event_id}")
+                logger.info(f"✅ Уведомление {notif_id} синхронизировано с календарём")
+            else:
+                logger.error(f"❌ Не удалось создать событие для уведомления {notif_id}")
         
         elif action == 'update':
-            # Обновляем событие в календаре
             sync_data = calendar_sync.get(notif_id)
-            if sync_data and sync_data.get('calendar_event_id'):
-                event_id = sync_data['calendar_event_id']
+            if sync_data and sync_data.get('calendar_event_url'):
+                event_url = sync_data['calendar_event_url']
                 
                 event_time_str = notif.get('time')
                 if event_time_str:
@@ -792,48 +775,35 @@ async def sync_notification_to_calendar(notif_id: str, action: str = 'create'):
                         tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
                         event_time = tz.localize(event_time)
                     
-                    await calendar_api.update_event(
-                        event_id=event_id,
+                    success = await calendar_api.update_event(
+                        event_url=event_url,
                         summary=notif['text'][:100],
                         start_time=event_time,
                         description=f"Уведомление из бота\nТекст: {notif['text']}"
                     )
                     
-                    sync_data['last_sync'] = get_current_time().isoformat()
-                    save_calendar_sync()
-                    logger.info(f"Уведомление {notif_id} обновлено в календаре")
+                    if success:
+                        sync_data['last_sync'] = get_current_time().isoformat()
+                        sync_data['event_time'] = event_time.isoformat()
+                        save_calendar_sync()
+                        logger.info(f"✅ Уведомление {notif_id} обновлено в календаре")
+                    else:
+                        logger.error(f"❌ Не удалось обновить событие {notif_id}")
         
         elif action == 'delete':
-            # Удаляем событие из календаря
             sync_data = calendar_sync.get(notif_id)
-            if sync_data and sync_data.get('calendar_event_id'):
-                event_id = sync_data['calendar_event_id']
-                await calendar_api.delete_event(event_id)
-                del calendar_sync[notif_id]
-                save_calendar_sync()
-                logger.info(f"Уведомление {notif_id} удалено из календаря")
+            if sync_data and sync_data.get('calendar_event_url'):
+                event_url = sync_data['calendar_event_url']
+                success = await calendar_api.delete_event(event_url)
+                if success:
+                    del calendar_sync[notif_id]
+                    save_calendar_sync()
+                    logger.info(f"✅ Уведомление {notif_id} удалено из календаря")
+                else:
+                    logger.error(f"❌ Не удалось удалить событие {notif_id}")
     
     except Exception as e:
-        logger.error(f"Ошибка синхронизации с календарём: {e}")
-
-
-async def sync_calendar_to_bot_task():
-    """Фоновая задача для синхронизации календаря с ботом"""
-    while True:
-        try:
-            if get_calendar_sync_enabled() and ADMIN_ID:
-                token = get_user_token(ADMIN_ID)
-                if token:
-                    calendar_api = YandexCalendarAPI(token)
-                    synced = await calendar_api.sync_calendar_to_bot()
-                    if synced > 0:
-                        logger.info(f"Импортировано {synced} событий из календаря")
-            
-            # Проверяем каждые 5 минут
-            await asyncio.sleep(300)
-        except Exception as e:
-            logger.error(f"Ошибка в задаче синхронизации календаря: {e}")
-            await asyncio.sleep(300)
+        logger.error(f"Ошибка синхронизации с календарём для {notif_id}: {e}")
 
 
 async def auto_delete_message(chat_id: int, message_id: int, delay: int = 180):
@@ -875,7 +845,7 @@ def init_folders():
             'daily_check_time': '06:00',
             'notifications_enabled': True,
             'timezone': 'Europe/Moscow',
-            'calendar_sync_enabled': False  # Новый параметр
+            'calendar_sync_enabled': False
         }
         with open(CONFIG_FILE, 'w') as f:
             json.dump(default_config, f)
@@ -1300,6 +1270,12 @@ async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     token = get_user_token(user_id)
     
+    # Проверяем доступ к календарю
+    calendar_access = False
+    calendar_message = ""
+    if token:
+        calendar_access, calendar_message = await test_calendar_access(user_id)
+    
     if token:
         access, access_message = await check_yandex_access(user_id)
         if access:
@@ -1316,7 +1292,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
                     f"✅ **Доступ к Яндекс.Диску имеется!**\n\n"
                     f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE} {BOT_VERSION_TIME})\n"
                     f"🕐 **Часовой пояс:** {config.get('timezone', 'Europe/Moscow')}\n"
-                    f"📅 **Синхронизация с календарём:** {'✅ Вкл' if get_calendar_sync_enabled() else '❌ Выкл'}{backup_text}",
+                    f"📅 **Синхронизация с календарём:** {'✅ Вкл' if get_calendar_sync_enabled() else '❌ Выкл'}\n"
+                    f"📅 **Доступ к календарю:** {'✅ ' + calendar_message if calendar_access else '❌ ' + calendar_message}\n{backup_text}",
                     reply_markup=keyboard,
                     parse_mode='Markdown'
                 )
@@ -1325,7 +1302,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
                     f"✅ **Доступ к Яндекс.Диску имеется!**\n\n"
                     f"🤖 **Версия бота:** v{BOT_VERSION} ({BOT_VERSION_DATE} {BOT_VERSION_TIME})\n"
                     f"🕐 **Часовой пояс:** {config.get('timezone', 'Europe/Moscow')}\n"
-                    f"📅 **Синхронизация с календарём:** {'✅ Вкл' if get_calendar_sync_enabled() else '❌ Выкл'}",
+                    f"📅 **Синхронизация с календарём:** {'✅ Вкл' if get_calendar_sync_enabled() else '❌ Выкл'}\n"
+                    f"📅 **Доступ к календарю:** {'✅ ' + calendar_message if calendar_access else '❌ ' + calendar_message}",
                     parse_mode='Markdown'
                 )
         else:
@@ -1379,7 +1357,8 @@ async def start_auth(callback: types.CallbackQuery, state: FSMContext):
         callback.from_user.id,
         "🔐 **Выберите способ авторизации:**\n\n"
         "• **Через код** - стандартный способ, нужно получить код на Яндексе\n"
-        "• **Через токен** - отладочный способ, токен можно получить по ссылке",
+        "• **Через токен** - отладочный способ, токен можно получить по ссылке\n\n"
+        "⚠️ **Важно:** Для работы с календарём нужны права `calendar:all`",
         reply_markup=keyboard,
         parse_mode='Markdown'
     )
@@ -1397,7 +1376,7 @@ async def auth_method_code(callback: types.CallbackQuery, state: FSMContext):
         f"1️⃣ Перейдите по ссылке для авторизации:\n"
         f"🔗 [Нажмите для авторизации]({auth_url})\n\n"
         f"2️⃣ Войдите в аккаунт Яндекс\n"
-        f"3️⃣ Разрешите доступ\n"
+        f"3️⃣ Разрешите доступ (нужны права на Диск и Календарь)\n"
         f"4️⃣ Скопируйте код из адресной строки (часть после `code=`)\n"
         f"5️⃣ **Отправьте код сюда текстовым сообщением**\n\n"
         f"⏰ **У вас есть 3 минуты** на ввод кода\n\n"
@@ -1411,7 +1390,7 @@ async def auth_method_code(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query_handler(lambda c: c.data == "auth_method_token", state=AuthStates.waiting_for_auth_method)
 async def auth_method_token(callback: types.CallbackQuery, state: FSMContext):
-    token_url = "https://oauth.yandex.ru/authorize?response_type=token&client_id=" + CLIENT_ID
+    token_url = get_token_url()
     
     await bot.send_message(
         callback.from_user.id,
@@ -1419,7 +1398,7 @@ async def auth_method_token(callback: types.CallbackQuery, state: FSMContext):
         f"1️⃣ Перейдите по ссылке для получения токена:\n"
         f"🔗 [Получить токен]({token_url})\n\n"
         f"2️⃣ Войдите в аккаунт Яндекс\n"
-        f"3️⃣ Разрешите доступ\n"
+        f"3️⃣ Разрешите доступ (нужны права на Диск и Календарь)\n"
         f"4️⃣ Скопируйте токен из адресной строки (часть после `access_token=`)\n"
         f"5️⃣ **Отправьте токен сюда текстовым сообщением**\n\n"
         f"⏰ **У вас есть 3 минуты** на ввод токена\n\n"
@@ -1458,12 +1437,16 @@ async def receive_direct_token(message: types.Message, state: FSMContext):
     save_user_token(user_id, token)
     access, access_message, yandex_disk = await check_yandex_access_with_test(user_id)
     
+    # Проверяем доступ к календарю
+    calendar_access, calendar_message = await test_calendar_access(user_id)
+    
     if access:
         yandex_disk.create_folder(config['backup_path'])
         result_message = (
             f"✅ **Токен действителен!**\n\n"
             f"📊 **Результаты проверки:**\n"
-            f"✅ {access_message}\n\n"
+            f"✅ {access_message}\n"
+            f"📅 **Доступ к календарю:** {'✅ ' + calendar_message if calendar_access else '❌ ' + calendar_message}\n\n"
             f"📁 **Папка для бэкапов:** `{config['backup_path']}`\n\n"
             f"🎉 **Все функции бота будут работать корректно!**\n\n"
             f"💡 **Для синхронизации с календарём** включите соответствующую опцию в настройках."
@@ -1525,12 +1508,16 @@ async def receive_code(message: types.Message, state: FSMContext):
         
         access, access_message, yandex_disk = await check_yandex_access_with_test(user_id)
         
+        # Проверяем доступ к календарю
+        calendar_access, calendar_message = await test_calendar_access(user_id)
+        
         if access:
             yandex_disk.create_folder(config['backup_path'])
             result_message = (
                 f"✅ **Авторизация успешна!**\n\n"
                 f"📊 **Результаты проверки:**\n"
-                f"✅ {access_message}\n\n"
+                f"✅ {access_message}\n"
+                f"📅 **Доступ к календарю:** {'✅ ' + calendar_message if calendar_access else '❌ ' + calendar_message}\n\n"
                 f"📁 **Папка для бэкапов:** `{config['backup_path']}`\n\n"
                 f"💡 **Для синхронизации с календарём** включите соответствующую опцию в настройках."
             )
@@ -3168,23 +3155,23 @@ async def settings_menu_handler(message: types.Message, state: FSMContext):
         InlineKeyboardButton("🔑 Авторизация", callback_data="auth_yandex"),
         InlineKeyboardButton("💾 Создать бэкап", callback_data="create_backup_manual"),
         InlineKeyboardButton("📤 Восстановить из бэкапа", callback_data="restore_backup"),
-        InlineKeyboardButton("🔄 Синхр. календарь → бот", callback_data="sync_calendar_to_bot"),
+        InlineKeyboardButton("🔄 Проверить доступ к календарю", callback_data="check_calendar_access"),
         InlineKeyboardButton("ℹ️ Информация", callback_data="info")
     )
     
     await message.reply("⚙️ **НАСТРОЙКИ**", reply_markup=keyboard, parse_mode='Markdown')
 
 
-@dp.callback_query_handler(lambda c: c.data == "sync_calendar_to_bot")
-async def sync_calendar_to_bot_handler(callback: types.CallbackQuery, state: FSMContext):
-    """Обработчик для принудительной синхронизации календаря с ботом"""
+@dp.callback_query_handler(lambda c: c.data == "check_calendar_access")
+async def check_calendar_access_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Проверяет доступ к календарю"""
     user_id = callback.from_user.id
     token = get_user_token(user_id)
     
     if not token:
         await bot.send_message(
             callback.from_user.id,
-            "❌ **Нет доступа к Яндекс.Календарю!**\n\n"
+            "❌ **Нет токена авторизации!**\n\n"
             "Сначала авторизуйтесь в настройках.",
             parse_mode='Markdown'
         )
@@ -3193,25 +3180,27 @@ async def sync_calendar_to_bot_handler(callback: types.CallbackQuery, state: FSM
     
     status_msg = await bot.send_message(
         callback.from_user.id,
-        "⏳ **Синхронизация календаря...**",
+        "⏳ **Проверка доступа к календарю...**",
         parse_mode='Markdown'
     )
     
-    calendar_api = YandexCalendarAPI(token)
-    synced_count = await calendar_api.sync_calendar_to_bot()
+    access, message = await test_calendar_access(user_id)
     
-    if synced_count > 0:
+    if access:
         await status_msg.edit_text(
-            f"✅ **Синхронизация завершена!**\n\n"
-            f"📥 Импортировано событий: {synced_count}\n"
-            f"📝 Всего уведомлений: {len(notifications)}",
+            f"✅ **Доступ к календарю есть!**\n\n"
+            f"{message}\n\n"
+            f"💡 Для синхронизации уведомлений включите опцию в настройках.",
             parse_mode='Markdown'
         )
-        await show_backup_notification(callback.message)
     else:
         await status_msg.edit_text(
-            "ℹ️ **Новых событий для импорта не найдено**\n\n"
-            "Убедитесь, что в календаре есть события на ближайшие 30 дней.",
+            f"❌ **Нет доступа к календарю!**\n\n"
+            f"{message}\n\n"
+            f"⚠️ **Решение:**\n"
+            f"1. Переавторизуйтесь с правами `calendar:all`\n"
+            f"2. Убедитесь, что у приложения есть доступ к календарю\n"
+            f"3. Попробуйте получить новый токен",
             parse_mode='Markdown'
         )
     
@@ -3230,21 +3219,25 @@ async def toggle_calendar_sync(callback: types.CallbackQuery, state: FSMContext)
     
     if config['calendar_sync_enabled']:
         # При включении синхронизации синхронизируем все существующие уведомления
+        synced_count = 0
         for notif_id in notifications:
             if notif_id not in calendar_sync:
                 await sync_notification_to_calendar(notif_id, 'create')
+                synced_count += 1
         
         await bot.send_message(
             callback.from_user.id,
-            "✅ **Синхронизация с Яндекс Календарём включена!**\n\n"
-            "Все уведомления будут автоматически добавляться в календарь.\n\n"
-            "💡 Для синхронизации существующих событий используйте кнопку «Синхр. календарь → бот»",
+            f"✅ **Синхронизация с Яндекс Календарём включена!**\n\n"
+            f"📊 Синхронизировано уведомлений: {synced_count}\n\n"
+            f"💡 Все новые уведомления будут автоматически добавляться в календарь.\n\n"
+            f"⚠️ Убедитесь, что у бота есть доступ к вашему календарю.",
             parse_mode='Markdown'
         )
     else:
         await bot.send_message(
             callback.from_user.id,
-            "✅ **Синхронизация с Яндекс Календарём выключена!**",
+            "✅ **Синхронизация с Яндекс Календарём выключена!**\n\n"
+            "Существующие события в календаре останутся, но новые добавляться не будут.",
             parse_mode='Markdown'
         )
     
@@ -3651,6 +3644,12 @@ async def show_info(callback: types.CallbackQuery):
     
     calendar_sync_status = "✅ Вкл" if get_calendar_sync_enabled() else "❌ Выкл"
     
+    # Проверяем доступ к календарю
+    calendar_access = False
+    calendar_message = "Не проверено"
+    if ADMIN_ID and get_user_token(ADMIN_ID):
+        calendar_access, calendar_message = await test_calendar_access(ADMIN_ID)
+    
     info = f"""
 📊 **СТАТИСТИКА**
 
@@ -3666,6 +3665,7 @@ async def show_info(callback: types.CallbackQuery):
 📅 **Синхр. с календарём:** `{calendar_sync_status}`
 
 🔑 **Яндекс.Диск:** `{'✅ Доступен' if access else '❌ ' + access_message}`
+📅 **Яндекс.Календарь:** `{'✅ ' + calendar_message if calendar_access else '❌ ' + calendar_message}`
 """
     await bot.send_message(callback.from_user.id, info, parse_mode='Markdown')
     await callback.answer()
@@ -4069,6 +4069,13 @@ async def on_startup(dp):
             logger.info("✅ Доступ к Яндекс.Диску получен")
         else:
             logger.warning(f"⚠️ Токен есть, но доступ ограничен: {message}")
+        
+        # Проверяем доступ к календарю
+        calendar_access, calendar_message = await test_calendar_access(ADMIN_ID)
+        if calendar_access:
+            logger.info(f"✅ Доступ к Яндекс.Календарю получен: {calendar_message}")
+        else:
+            logger.warning(f"⚠️ Нет доступа к Яндекс.Календарю: {calendar_message}")
     else:
         logger.warning("❌ Нет токена Яндекс.Диска (требуется авторизация)")
     
@@ -4081,7 +4088,6 @@ async def on_startup(dp):
     
     asyncio.create_task(check_notifications())
     asyncio.create_task(daily_check())
-    asyncio.create_task(sync_calendar_to_bot_task())
     logger.info("✅ Бот успешно запущен!")
 
 
