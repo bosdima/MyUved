@@ -33,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "2.23"
+BOT_VERSION = "2.24"
 BOT_VERSION_DATE = "09.04.2026"
-BOT_VERSION_TIME = "10:00"
+BOT_VERSION_TIME = "10:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -733,6 +733,10 @@ async def check_notifications():
                         notify_time = tz.localize(notify_time)
                     
                     if now >= notify_time:
+                        # Проверяем, не отправляли ли уже это уведомление
+                        if notif.get('notified', False):
+                            continue
+                        
                         # Проверяем, является ли это повторным уведомлением
                         is_repeat = notif.get('is_repeat', False)
                         repeat_count = notif.get('repeat_count', 0)
@@ -755,22 +759,9 @@ async def check_notifications():
                             parse_mode='Markdown'
                         )
                         
-                        # Для отложенных уведомлений - переносим на час вперед
-                        if is_repeat:
-                            new_time = now + timedelta(hours=1)
-                            tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
-                            if new_time.tzinfo is None:
-                                new_time = tz.localize(new_time)
-                            new_time_utc = new_time.astimezone(pytz.UTC)
-                            notifications[notif_id]['time'] = new_time_utc.isoformat()
-                            notifications[notif_id]['repeat_count'] = repeat_count + 1
-                            notifications[notif_id]['notified'] = False
-                            # is_repeat остается True
-                            save_data()
-                        else:
-                            # Обычное уведомление - просто помечаем как отправленное
-                            notifications[notif_id]['notified'] = True
-                            save_data()
+                        # Помечаем как отправленное, чтобы не отправлять снова
+                        notifications[notif_id]['notified'] = True
+                        save_data()
                 
                 # Для повторяющихся уведомлений (ежедневные, по дням недели и т.д.)
                 elif repeat_type != 'no':
@@ -1946,22 +1937,19 @@ async def snooze_notification_start(callback: types.CallbackQuery, state: FSMCon
         await callback.answer("Уведомление не найдено")
         return
     
-    await state.update_data(snooze_notif_id=notif_id)
-    await state.update_data(snooze_state=True)
-    
     repeat_count = notifications[notif_id].get('repeat_count', 0)
     
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
-        InlineKeyboardButton("⏰ На 1 час", callback_data="snooze_select_1_hours"),
-        InlineKeyboardButton("⏰ На 3 часа", callback_data="snooze_select_3_hours"),
-        InlineKeyboardButton("⏰ На 6 часов", callback_data="snooze_select_6_hours"),
-        InlineKeyboardButton("⏰ На 12 часов", callback_data="snooze_select_12_hours"),
-        InlineKeyboardButton("📅 На 1 день", callback_data="snooze_select_1_days"),
-        InlineKeyboardButton("📅 На 2 дня", callback_data="snooze_select_2_days"),
-        InlineKeyboardButton("📅 На 3 дня", callback_data="snooze_select_3_days"),
-        InlineKeyboardButton("📅 На 7 дней", callback_data="snooze_select_7_days"),
-        InlineKeyboardButton("🎯 Свой вариант", callback_data="snooze_custom"),
+        InlineKeyboardButton("⏰ На 1 час", callback_data=f"snooze_select_{notif_id}_1_hours"),
+        InlineKeyboardButton("⏰ На 3 часа", callback_data=f"snooze_select_{notif_id}_3_hours"),
+        InlineKeyboardButton("⏰ На 6 часов", callback_data=f"snooze_select_{notif_id}_6_hours"),
+        InlineKeyboardButton("⏰ На 12 часов", callback_data=f"snooze_select_{notif_id}_12_hours"),
+        InlineKeyboardButton("📅 На 1 день", callback_data=f"snooze_select_{notif_id}_1_days"),
+        InlineKeyboardButton("📅 На 2 дня", callback_data=f"snooze_select_{notif_id}_2_days"),
+        InlineKeyboardButton("📅 На 3 дня", callback_data=f"snooze_select_{notif_id}_3_days"),
+        InlineKeyboardButton("📅 На 7 дней", callback_data=f"snooze_select_{notif_id}_7_days"),
+        InlineKeyboardButton("🎯 Свой вариант", callback_data=f"snooze_custom_{notif_id}"),
         InlineKeyboardButton("❌ Отмена", callback_data="cancel_snooze")
     )
     
@@ -1979,16 +1967,16 @@ async def snooze_notification_start(callback: types.CallbackQuery, state: FSMCon
 
 @dp.callback_query_handler(lambda c: c.data.startswith("snooze_select_"), state='*')
 async def snooze_time_selected(callback: types.CallbackQuery, state: FSMContext):
+    # Формат: snooze_select_{notif_id}_{value}_{unit}
     parts = callback.data.replace("snooze_select_", "").split("_")
-    value = int(parts[0])
-    unit = parts[1]
+    notif_id = parts[0]
+    value = int(parts[1])
+    unit = parts[2]
     
-    data = await state.get_data()
-    notif_id = data.get('snooze_notif_id')
+    logger.info(f"Откладывание уведомления {notif_id} на {value} {unit}")
     
-    if not notif_id or notif_id not in notifications:
+    if notif_id not in notifications:
         await callback.answer("Уведомление не найдено")
-        await state.finish()
         return
     
     repeat_count = notifications[notif_id].get('repeat_count', 0)
@@ -2029,12 +2017,20 @@ async def snooze_time_selected(callback: types.CallbackQuery, state: FSMContext)
     except:
         pass
     
-    await state.finish()
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "snooze_custom", state='*')
+@dp.callback_query_handler(lambda c: c.data.startswith("snooze_custom_"), state='*')
 async def snooze_custom(callback: types.CallbackQuery, state: FSMContext):
+    notif_id = callback.data.replace("snooze_custom_", "")
+    logger.info(f"Пользователь {callback.from_user.id} выбрал свой вариант откладывания для {notif_id}")
+    
+    if notif_id not in notifications:
+        await callback.answer("Уведомление не найдено")
+        return
+    
+    await state.update_data(snooze_notif_id=notif_id)
+    
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
         InlineKeyboardButton("⏰ В часах", callback_data="snooze_custom_hours"),
@@ -3587,67 +3583,6 @@ async def cancel_operation(message: types.Message, state: FSMContext):
 async def on_startup(dp):
     init_folders()
     load_data()
-    
-    # Если нет уведомлений, создаем тестовые для отладки
-    if len(notifications) == 0:
-        logger.info("📝 Создание тестовых уведомлений...")
-        now = get_current_time()
-        tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
-        
-        # Тестовое уведомление #1 - одноразовое
-        test_time_1 = tz.localize(datetime(now.year, now.month, now.day + 1, 20, 0))
-        notifications["1"] = {
-            'text': 'Передать показания счётчиков',
-            'time': test_time_1.isoformat(),
-            'created': now.isoformat(),
-            'notified': False,
-            'num': 1,
-            'repeat_type': 'no',
-            'is_repeat': False,
-            'repeat_count': 0
-        }
-        
-        # Тестовое уведомление #2 - по дням недели
-        weekdays_list = [0, 1, 2, 3, 4]  # Пн-Пт
-        next_time = get_next_weekday(weekdays_list, 10, 0, now)
-        if next_time:
-            notifications["2"] = {
-                'text': 'Купить Акции (на Золото) Т-Банк',
-                'time': next_time.isoformat(),
-                'created': now.isoformat(),
-                'notified': False,
-                'num': 2,
-                'repeat_type': 'weekdays',
-                'repeat_hour': 10,
-                'repeat_minute': 0,
-                'weekdays_list': weekdays_list,
-                'last_trigger': (next_time - timedelta(days=7)).isoformat(),
-                'next_time': next_time.isoformat(),
-                'is_repeat': False,
-                'repeat_count': 0
-            }
-        
-        # Тестовое уведомление #3 - ежедневное
-        test_time_3 = tz.localize(datetime(now.year, now.month, now.day, 7, 0))
-        if test_time_3 <= now:
-            test_time_3 += timedelta(days=1)
-        notifications["3"] = {
-            'text': 'Выпить таблетки',
-            'time': test_time_3.isoformat(),
-            'created': now.isoformat(),
-            'notified': False,
-            'num': 3,
-            'repeat_type': 'every_day',
-            'repeat_hour': 7,
-            'repeat_minute': 0,
-            'last_trigger': (test_time_3 - timedelta(days=1)).isoformat(),
-            'next_time': test_time_3.isoformat(),
-            'is_repeat': False,
-            'repeat_count': 0
-        }
-        
-        save_data()
-        logger.info(f"✅ Создано {len(notifications)} тестовых уведомлений")
     
     # Перенумерация уведомлений
     new_notifications = {}
