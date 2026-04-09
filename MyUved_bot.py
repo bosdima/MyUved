@@ -33,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "2.22"
-BOT_VERSION_DATE = "08.04.2026"
-BOT_VERSION_TIME = "20:30"
+BOT_VERSION = "2.23"
+BOT_VERSION_DATE = "09.04.2026"
+BOT_VERSION_TIME = "10:00"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -1937,7 +1937,7 @@ async def save_edited_notification(message: types.Message, state: FSMContext, no
 
 # ========== ФУНКЦИИ ДЛЯ ОТЛОЖЕННЫХ УВЕДОМЛЕНИЙ ==========
 
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('snooze_'))
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('snooze_'), state='*')
 async def snooze_notification_start(callback: types.CallbackQuery, state: FSMContext):
     notif_id = callback.data.replace('snooze_', '')
     logger.info(f"Откладывание уведомления {notif_id} пользователем {callback.from_user.id}")
@@ -1947,20 +1947,21 @@ async def snooze_notification_start(callback: types.CallbackQuery, state: FSMCon
         return
     
     await state.update_data(snooze_notif_id=notif_id)
+    await state.update_data(snooze_state=True)
     
     repeat_count = notifications[notif_id].get('repeat_count', 0)
     
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
-        InlineKeyboardButton("⏰ На 1 час", callback_data="snooze_time_1_hours"),
-        InlineKeyboardButton("⏰ На 3 часа", callback_data="snooze_time_3_hours"),
-        InlineKeyboardButton("⏰ На 6 часов", callback_data="snooze_time_6_hours"),
-        InlineKeyboardButton("⏰ На 12 часов", callback_data="snooze_time_12_hours"),
-        InlineKeyboardButton("📅 На 1 день", callback_data="snooze_time_1_days"),
-        InlineKeyboardButton("📅 На 2 дня", callback_data="snooze_time_2_days"),
-        InlineKeyboardButton("📅 На 3 дня", callback_data="snooze_time_3_days"),
-        InlineKeyboardButton("📅 На 7 дней", callback_data="snooze_time_7_days"),
-        InlineKeyboardButton("🎯 Свой вариант", callback_data="snooze_time_custom"),
+        InlineKeyboardButton("⏰ На 1 час", callback_data="snooze_select_1_hours"),
+        InlineKeyboardButton("⏰ На 3 часа", callback_data="snooze_select_3_hours"),
+        InlineKeyboardButton("⏰ На 6 часов", callback_data="snooze_select_6_hours"),
+        InlineKeyboardButton("⏰ На 12 часов", callback_data="snooze_select_12_hours"),
+        InlineKeyboardButton("📅 На 1 день", callback_data="snooze_select_1_days"),
+        InlineKeyboardButton("📅 На 2 дня", callback_data="snooze_select_2_days"),
+        InlineKeyboardButton("📅 На 3 дня", callback_data="snooze_select_3_days"),
+        InlineKeyboardButton("📅 На 7 дней", callback_data="snooze_select_7_days"),
+        InlineKeyboardButton("🎯 Свой вариант", callback_data="snooze_custom"),
         InlineKeyboardButton("❌ Отмена", callback_data="cancel_snooze")
     )
     
@@ -1976,9 +1977,9 @@ async def snooze_notification_start(callback: types.CallbackQuery, state: FSMCon
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("snooze_time_"), state="*")
+@dp.callback_query_handler(lambda c: c.data.startswith("snooze_select_"), state='*')
 async def snooze_time_selected(callback: types.CallbackQuery, state: FSMContext):
-    parts = callback.data.replace("snooze_time_", "").split("_")
+    parts = callback.data.replace("snooze_select_", "").split("_")
     value = int(parts[0])
     unit = parts[1]
     
@@ -2032,7 +2033,7 @@ async def snooze_time_selected(callback: types.CallbackQuery, state: FSMContext)
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "snooze_time_custom", state="*")
+@dp.callback_query_handler(lambda c: c.data == "snooze_custom", state='*')
 async def snooze_custom(callback: types.CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
@@ -2527,7 +2528,7 @@ async def snooze_set_specific_date(message: types.Message, state: FSMContext):
         await message.reply(f"❌ **Ошибка:** {str(e)}", parse_mode='Markdown')
 
 
-@dp.callback_query_handler(lambda c: c.data == "cancel_snooze", state="*")
+@dp.callback_query_handler(lambda c: c.data == "cancel_snooze", state='*')
 async def cancel_snooze(callback: types.CallbackQuery, state: FSMContext):
     await state.finish()
     await bot.send_message(callback.from_user.id, "✅ **Откладывание отменено**", parse_mode='Markdown')
