@@ -22,8 +22,6 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, InputFile
 from aiogram.utils import executor
 from dotenv import load_dotenv
-from yandex_calendar import Calendar
-from yandex_calendar.exceptions import YandexCalendarError
 
 # Настройка логирования с ротацией (макс 100 КБ)
 log_file = 'bot_debug.log'
@@ -49,9 +47,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "4.00"
+BOT_VERSION = "4.01"
 BOT_VERSION_DATE = "10.04.2026"
-BOT_VERSION_TIME = "12:00"
+BOT_VERSION_TIME = "14:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -86,6 +84,8 @@ calendar_events: Dict = {}
 
 YANDEX_API_BASE = "https://cloud-api.yandex.net/v1/disk"
 YANDEX_OAUTH_URL = "https://oauth.yandex.ru/authorize"
+# Правильный URL для API Календаря
+YANDEX_CALENDAR_API = "https://api.calendar.yandex.net/calendar/v1"
 
 TIMEZONES = {
     'Москва (UTC+3)': 'Europe/Moscow',
@@ -228,54 +228,55 @@ async def get_access_token(auth_code: str) -> Optional[str]:
 
 
 class YandexCalendarAPI:
-    """Класс для работы с Яндекс Календарём через официальную библиотеку"""
+    """Класс для работы с Яндекс Календарём через HTTP API"""
     
     def __init__(self, token: str):
         self.token = token
-        try:
-            self.calendar = Calendar(access_token=token)
-            self.is_initialized = True
-        except Exception as e:
-            logger.error(f"Ошибка инициализации календаря: {e}")
-            self.is_initialized = False
-            self.calendar = None
+        self.headers = {
+            "Authorization": f"OAuth {token}",
+            "Content-Type": "application/json"
+        }
+        self.base_url = YANDEX_CALENDAR_API
     
     async def test_connection(self) -> tuple[bool, str]:
         """Проверяет соединение с Яндекс.Календарём и валидность токена"""
-        if not self.is_initialized or not self.calendar:
-            return False, "Не удалось инициализировать клиент календаря"
-        
         try:
-            # Пробуем получить список календарей
-            calendars = await self.get_calendars()
-            if calendars is not None:
-                return True, "Токен действителен, API доступен"
-            else:
-                return False, "Не удалось получить список календарей"
-        except YandexCalendarError as e:
-            if "401" in str(e) or "Unauthorized" in str(e):
-                return False, "Токен недействителен (истек или отозван)"
-            elif "403" in str(e) or "Forbidden" in str(e):
-                return False, "Недостаточно прав для доступа к календарю (проверьте calendar:read и calendar:write)"
-            else:
-                return False, f"Ошибка API: {str(e)[:200]}"
+            # Пробуем получить список календарей через правильный эндпоинт
+            url = f"{self.base_url}/calendars"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers, timeout=15) as response:
+                    if response.status == 200:
+                        return True, "Токен действителен, API доступен"
+                    elif response.status == 401:
+                        return False, "Токен недействителен (истек или отозван)"
+                    elif response.status == 403:
+                        return False, "Недостаточно прав. Убедитесь, что в OAuth-приложении выбраны права calendar:read и calendar:write"
+                    elif response.status == 404:
+                        return False, "API эндпоинт не найден. Возможно, требуется другая версия API"
+                    else:
+                        error_text = await response.text()
+                        return False, f"Ошибка API ({response.status}): {error_text[:150]}"
+        except asyncio.TimeoutError:
+            return False, "Таймаут подключения к API Яндекс.Календаря"
+        except aiohttp.ClientConnectorError:
+            return False, "Не удалось подключиться к API (проверьте интернет)"
         except Exception as e:
-            return False, f"Неизвестная ошибка: {str(e)[:200]}"
+            return False, f"Неизвестная ошибка: {str(e)[:150]}"
     
     async def test_calendar_access(self) -> tuple[bool, str, Optional[str]]:
-        """Проверяет доступ к конкретному календарю пользователя"""
-        if not self.is_initialized or not self.calendar:
-            return False, "Не удалось инициализировать клиент календаря", None
-        
+        """Проверяет доступ к календарям пользователя"""
         try:
             calendars = await self.get_calendars()
+            if calendars is None:
+                return False, "Не удалось получить список календарей (проверьте права доступа)", None
+            
             if not calendars:
-                return False, "Не найдено ни одного календаря. Создайте календарь в веб-интерфейсе Яндекса.", None
+                return False, "Не найдено ни одного календаря. Создайте календарь на calendar.yandex.ru", None
             
             # Ищем основной календарь
             primary_calendar = None
             for cal in calendars:
-                if cal.get('primary', False) or cal.get('id') == 'primary':
+                if cal.get('primary', False):
                     primary_calendar = cal
                     break
             
@@ -290,22 +291,36 @@ class YandexCalendarAPI:
                 return False, "Не удалось получить ID календаря", None
                 
         except Exception as e:
-            return False, f"Ошибка проверки календаря: {str(e)[:200]}", None
+            return False, f"Ошибка проверки календаря: {str(e)[:150]}", None
     
-    async def get_calendars(self) -> List[Dict]:
+    async def get_calendars(self) -> Optional[List[Dict]]:
         """Получает список календарей пользователя"""
         try:
-            # Используем синхронный метод в асинхронном контексте через run_in_executor
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, self.calendar.calendars_list)
-            return result.get('items', [])
+            url = f"{self.base_url}/calendars"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers, timeout=15) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        # Ответ может быть в разных форматах
+                        if 'items' in data:
+                            return data.get('items', [])
+                        elif 'calendars' in data:
+                            return data.get('calendars', [])
+                        else:
+                            return []
+                    else:
+                        logger.error(f"Ошибка получения календарей: {response.status}")
+                        return None
         except Exception as e:
             logger.error(f"Ошибка получения календарей: {e}")
-            return []
+            return None
     
     async def get_default_calendar_id(self) -> Optional[str]:
         """Получает ID календаря по умолчанию"""
         calendars = await self.get_calendars()
+        if not calendars:
+            return 'primary'
+        
         for calendar in calendars:
             if calendar.get('primary', False):
                 return calendar.get('id', 'primary')
@@ -315,10 +330,6 @@ class YandexCalendarAPI:
                            description: str = "", calendar_id: str = None) -> Optional[str]:
         """Создаёт событие в календаре"""
         try:
-            if not self.is_initialized or not self.calendar:
-                logger.error("Клиент календаря не инициализирован")
-                return None
-            
             if calendar_id is None:
                 calendar_id = await self.get_default_calendar_id()
                 if not calendar_id:
@@ -327,42 +338,47 @@ class YandexCalendarAPI:
             if end_time is None:
                 end_time = start_time + timedelta(hours=1)
             
-            # Форматируем время для API
             tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
             if start_time.tzinfo is None:
                 start_time = tz.localize(start_time)
             if end_time.tzinfo is None:
                 end_time = tz.localize(end_time)
             
+            # Формат RFC3339
+            start_str = start_time.isoformat()
+            end_str = end_time.isoformat()
+            
+            url = f"{self.base_url}/calendars/{calendar_id}/events"
             event_data = {
-                'summary': summary[:255],
-                'description': description[:1000],
-                'start': {
-                    'dateTime': start_time.isoformat(),
-                    'timeZone': config.get('timezone', 'Europe/Moscow')
+                "summary": summary[:255],
+                "description": description[:1000],
+                "start": {
+                    "dateTime": start_str,
+                    "timeZone": config.get('timezone', 'Europe/Moscow')
                 },
-                'end': {
-                    'dateTime': end_time.isoformat(),
-                    'timeZone': config.get('timezone', 'Europe/Moscow')
+                "end": {
+                    "dateTime": end_str,
+                    "timeZone": config.get('timezone', 'Europe/Moscow')
                 },
-                'reminders': {
-                    'useDefault': False,
-                    'overrides': [
-                        {'method': 'popup', 'minutes': 15}
+                "reminders": {
+                    "useDefault": False,
+                    "overrides": [
+                        {"method": "popup", "minutes": 15}
                     ]
                 }
             }
             
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, 
-                lambda: self.calendar.events_insert(calendar_id=calendar_id, event=event_data)
-            )
-            
-            event_id = result.get('id')
-            logger.info(f"Создано событие в календаре: {summary}, ID: {event_id}")
-            return event_id
-            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=self.headers, json=event_data, timeout=15) as response:
+                    if response.status in [200, 201]:
+                        data = await response.json()
+                        event_id = data.get('id')
+                        logger.info(f"Создано событие в календаре: {summary}, ID: {event_id}")
+                        return event_id
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Ошибка создания события ({response.status}): {error_text[:200]}")
+                        return None
         except Exception as e:
             logger.error(f"Ошибка создания события: {e}")
             return None
@@ -371,20 +387,18 @@ class YandexCalendarAPI:
                            end_time: datetime = None, description: str = None, calendar_id: str = None) -> bool:
         """Обновляет событие в календаре"""
         try:
-            if not self.is_initialized or not self.calendar:
-                return False
-            
             if calendar_id is None:
                 calendar_id = await self.get_default_calendar_id()
                 if not calendar_id:
                     calendar_id = 'primary'
             
             # Получаем текущее событие
-            loop = asyncio.get_event_loop()
-            event = await loop.run_in_executor(
-                None,
-                lambda: self.calendar.events_get(calendar_id=calendar_id, event_id=event_id)
-            )
+            url_get = f"{self.base_url}/calendars/{calendar_id}/events/{event_id}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url_get, headers=self.headers, timeout=15) as response:
+                    if response.status != 200:
+                        return False
+                    event = await response.json()
             
             # Обновляем поля
             if summary is not None:
@@ -405,14 +419,10 @@ class YandexCalendarAPI:
                 new_end = start_time + timedelta(hours=1)
                 event['end']['dateTime'] = new_end.isoformat()
             
-            await loop.run_in_executor(
-                None,
-                lambda: self.calendar.events_update(calendar_id=calendar_id, event_id=event_id, event=event)
-            )
-            
-            logger.info(f"Событие {event_id} обновлено в календаре")
-            return True
-            
+            url_put = f"{self.base_url}/calendars/{calendar_id}/events/{event_id}"
+            async with session.put(url_put, headers=self.headers, json=event, timeout=15) as put_response:
+                return put_response.status in [200, 201]
+                
         except Exception as e:
             logger.error(f"Ошибка обновления события: {e}")
             return False
@@ -420,23 +430,18 @@ class YandexCalendarAPI:
     async def delete_event(self, event_id: str, calendar_id: str = None) -> bool:
         """Удаляет событие из календаря"""
         try:
-            if not self.is_initialized or not self.calendar:
-                return False
-            
             if calendar_id is None:
                 calendar_id = await self.get_default_calendar_id()
                 if not calendar_id:
                     calendar_id = 'primary'
             
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self.calendar.events_delete(calendar_id=calendar_id, event_id=event_id)
-            )
-            
-            logger.info(f"Удалено событие из календаря: {event_id}")
-            return True
-            
+            url = f"{self.base_url}/calendars/{calendar_id}/events/{event_id}"
+            async with aiohttp.ClientSession() as session:
+                async with session.delete(url, headers=self.headers, timeout=15) as response:
+                    success = response.status in [200, 204]
+                    if success:
+                        logger.info(f"Удалено событие из календаря: {event_id}")
+                    return success
         except Exception as e:
             logger.error(f"Ошибка удаления события: {e}")
             return False
@@ -444,9 +449,6 @@ class YandexCalendarAPI:
     async def get_events(self, from_date: datetime, to_date: datetime, calendar_id: str = None) -> List[Dict]:
         """Получает события из календаря за период"""
         try:
-            if not self.is_initialized or not self.calendar:
-                return []
-            
             if calendar_id is None:
                 calendar_id = await self.get_default_calendar_id()
                 if not calendar_id:
@@ -461,18 +463,18 @@ class YandexCalendarAPI:
             params = {
                 'timeMin': from_date.isoformat(),
                 'timeMax': to_date.isoformat(),
-                'singleEvents': True,
+                'singleEvents': 'true',
                 'orderBy': 'startTime'
             }
             
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: self.calendar.events_list(calendar_id=calendar_id, params=params)
-            )
-            
-            return result.get('items', [])
-            
+            url = f"{self.base_url}/calendars/{calendar_id}/events"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self.headers, params=params, timeout=15) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return data.get('items', [])
+                    else:
+                        return []
         except Exception as e:
             logger.error(f"Ошибка получения событий: {e}")
             return []
@@ -501,7 +503,6 @@ class YandexCalendarAPI:
                 except:
                     continue
                 
-                # Проверяем, есть ли уже такое событие
                 existing_notif_id = None
                 for nid, sync_data in calendar_sync.items():
                     if sync_data.get('calendar_event_id') == event_id:
@@ -541,6 +542,9 @@ class YandexCalendarAPI:
             logger.error(f"Ошибка синхронизации календаря в бот: {e}")
             return 0
 
+
+# Продолжение кода (класс YandexDiskAPI, состояния FSM, функции работы с данными, обработчики)
+# ... (весь остальной код бота остается таким же, как в предыдущей версии 4.00)
 
 class YandexDiskAPI:
     def __init__(self, token):
@@ -796,9 +800,6 @@ async def verify_calendar_connection() -> tuple[bool, str]:
     
     calendar_api = YandexCalendarAPI(token)
     
-    if not calendar_api.is_initialized:
-        return False, "Не удалось инициализировать клиент календаря"
-    
     api_ok, api_message = await calendar_api.test_connection()
     if not api_ok:
         return False, f"Ошибка API: {api_message}"
@@ -826,9 +827,6 @@ async def sync_notification_to_calendar(notif_id: str, action: str = 'create'):
         return
     
     calendar_api = YandexCalendarAPI(token)
-    if not calendar_api.is_initialized:
-        logger.error("Клиент календаря не инициализирован")
-        return
     
     try:
         if action == 'create':
@@ -915,10 +913,9 @@ async def sync_calendar_to_bot_task():
                 token = get_user_token(ADMIN_ID)
                 if token:
                     calendar_api = YandexCalendarAPI(token)
-                    if calendar_api.is_initialized:
-                        synced = await calendar_api.sync_calendar_to_bot()
-                        if synced > 0:
-                            logger.info(f"Импортировано {synced} событий из календаря")
+                    synced = await calendar_api.sync_calendar_to_bot()
+                    if synced > 0:
+                        logger.info(f"Импортировано {synced} событий из календаря")
             
             await asyncio.sleep(300)
         except Exception as e:
@@ -1544,10 +1541,7 @@ async def receive_direct_token(message: types.Message, state: FSMContext):
         yandex_disk.create_folder(config['backup_path'])
         
         calendar_api = YandexCalendarAPI(token)
-        if calendar_api.is_initialized:
-            calendar_ok, calendar_message, _ = await calendar_api.test_calendar_access()
-        else:
-            calendar_ok, calendar_message = False, "Не удалось инициализировать клиент"
+        calendar_ok, calendar_message, _ = await calendar_api.test_calendar_access()
         
         calendar_status = ""
         if calendar_ok:
@@ -1624,10 +1618,7 @@ async def receive_code(message: types.Message, state: FSMContext):
             yandex_disk.create_folder(config['backup_path'])
             
             calendar_api = YandexCalendarAPI(token)
-            if calendar_api.is_initialized:
-                calendar_ok, calendar_message, _ = await calendar_api.test_calendar_access()
-            else:
-                calendar_ok, calendar_message = False, "Не удалось инициализировать клиент"
+            calendar_ok, calendar_message, _ = await calendar_api.test_calendar_access()
             
             calendar_status = ""
             if calendar_ok:
@@ -3293,16 +3284,6 @@ async def check_calendar_connection_handler(callback: types.CallbackQuery):
     
     calendar_api = YandexCalendarAPI(token)
     
-    if not calendar_api.is_initialized:
-        await status_msg.edit_text(
-            f"❌ **Ошибка инициализации клиента календаря**\n\n"
-            f"Убедитесь, что установлена библиотека yandex-calendar\n"
-            f"и права доступа включают calendar:read и calendar:write",
-            parse_mode='Markdown'
-        )
-        await callback.answer()
-        return
-    
     api_ok, api_message = await calendar_api.test_connection()
     
     if not api_ok:
@@ -3313,8 +3294,7 @@ async def check_calendar_connection_handler(callback: types.CallbackQuery):
             f"💡 **Рекомендации:**\n"
             f"• Проверьте интернет-соединение\n"
             f"• Убедитесь, что в OAuth-приложении выбраны права calendar:read и calendar:write\n"
-            f"• Попробуйте авторизоваться заново\n"
-            f"• Убедитесь, что токен не истек",
+            f"• Попробуйте авторизоваться заново",
             parse_mode='Markdown'
         )
         await callback.answer()
@@ -3371,14 +3351,6 @@ async def sync_calendar_to_bot_handler(callback: types.CallbackQuery, state: FSM
     
     calendar_api = YandexCalendarAPI(token)
     
-    if not calendar_api.is_initialized:
-        await status_msg.edit_text(
-            "❌ **Не удалось инициализировать клиент календаря**",
-            parse_mode='Markdown'
-        )
-        await callback.answer()
-        return
-    
     api_ok, api_message = await calendar_api.test_connection()
     if not api_ok:
         await status_msg.edit_text(
@@ -3422,35 +3394,27 @@ async def toggle_calendar_sync(callback: types.CallbackQuery, state: FSMContext)
         token = get_user_token(callback.from_user.id)
         if token:
             calendar_api = YandexCalendarAPI(token)
-            if calendar_api.is_initialized:
-                api_ok, api_message = await calendar_api.test_connection()
-                
-                if not api_ok:
-                    await bot.send_message(
-                        callback.from_user.id,
-                        f"⚠️ **Синхронизация включена, но есть проблемы с подключением!**\n\n"
-                        f"{api_message}\n\n"
-                        f"Проверьте права доступа calendar:read и calendar:write\n"
-                        f"и попробуйте проверить соединение позже через кнопку «🔍 Проверить календарь»",
-                        parse_mode='Markdown'
-                    )
-                else:
-                    for notif_id in notifications:
-                        if notif_id not in calendar_sync:
-                            await sync_notification_to_calendar(notif_id, 'create')
-                    
-                    await bot.send_message(
-                        callback.from_user.id,
-                        "✅ **Синхронизация с Яндекс Календарём включена!**\n\n"
-                        "Все уведомления будут автоматически добавляться в календарь.\n\n"
-                        "💡 Для синхронизации существующих событий используйте кнопку «Синхр. календарь → бот»",
-                        parse_mode='Markdown'
-                    )
-            else:
+            api_ok, api_message = await calendar_api.test_connection()
+            
+            if not api_ok:
                 await bot.send_message(
                     callback.from_user.id,
-                    "⚠️ **Синхронизация включена, но клиент календаря не инициализирован!**\n\n"
-                    "Убедитесь, что установлена библиотека yandex-calendar",
+                    f"⚠️ **Синхронизация включена, но есть проблемы с подключением!**\n\n"
+                    f"{api_message}\n\n"
+                    f"Проверьте права доступа calendar:read и calendar:write\n"
+                    f"и попробуйте проверить соединение позже через кнопку «🔍 Проверить календарь»",
+                    parse_mode='Markdown'
+                )
+            else:
+                for notif_id in notifications:
+                    if notif_id not in calendar_sync:
+                        await sync_notification_to_calendar(notif_id, 'create')
+                
+                await bot.send_message(
+                    callback.from_user.id,
+                    "✅ **Синхронизация с Яндекс Календарём включена!**\n\n"
+                    "Все уведомления будут автоматически добавляться в календарь.\n\n"
+                    "💡 Для синхронизации существующих событий используйте кнопку «Синхр. календарь → бот»",
                     parse_mode='Markdown'
                 )
         else:
