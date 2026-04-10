@@ -48,7 +48,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Версия бота1
+# Версия бота
 BOT_VERSION = "4.00"
 BOT_VERSION_DATE = "10.04.2026"
 BOT_VERSION_TIME = "12:00"
