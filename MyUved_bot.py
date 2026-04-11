@@ -47,9 +47,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "4.01"
-BOT_VERSION_DATE = "10.04.2026"
-BOT_VERSION_TIME = "14:30"
+BOT_VERSION = "4.02"
+BOT_VERSION_DATE = "11.04.2026"
+BOT_VERSION_TIME = "15:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -84,7 +84,6 @@ calendar_events: Dict = {}
 
 YANDEX_API_BASE = "https://cloud-api.yandex.net/v1/disk"
 YANDEX_OAUTH_URL = "https://oauth.yandex.ru/authorize"
-# Правильный URL для API Календаря
 YANDEX_CALENDAR_API = "https://api.calendar.yandex.net/calendar/v1"
 
 TIMEZONES = {
@@ -179,6 +178,9 @@ def get_next_weekday(target_weekdays: List[int], hour: int, minute: int, from_da
     now = from_date or get_current_time()
     tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
     
+    if now.tzinfo is None:
+        now = tz.localize(now)
+    
     if now.weekday() in target_weekdays:
         today_trigger = tz.localize(datetime(now.year, now.month, now.day, hour, minute))
         if today_trigger > now:
@@ -241,7 +243,6 @@ class YandexCalendarAPI:
     async def test_connection(self) -> tuple[bool, str]:
         """Проверяет соединение с Яндекс.Календарём и валидность токена"""
         try:
-            # Пробуем получить список календарей через правильный эндпоинт
             url = f"{self.base_url}/calendars"
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=self.headers, timeout=15) as response:
@@ -273,7 +274,6 @@ class YandexCalendarAPI:
             if not calendars:
                 return False, "Не найдено ни одного календаря. Создайте календарь на calendar.yandex.ru", None
             
-            # Ищем основной календарь
             primary_calendar = None
             for cal in calendars:
                 if cal.get('primary', False):
@@ -301,7 +301,6 @@ class YandexCalendarAPI:
                 async with session.get(url, headers=self.headers, timeout=15) as response:
                     if response.status == 200:
                         data = await response.json()
-                        # Ответ может быть в разных форматах
                         if 'items' in data:
                             return data.get('items', [])
                         elif 'calendars' in data:
@@ -344,7 +343,6 @@ class YandexCalendarAPI:
             if end_time.tzinfo is None:
                 end_time = tz.localize(end_time)
             
-            # Формат RFC3339
             start_str = start_time.isoformat()
             end_str = end_time.isoformat()
             
@@ -392,7 +390,6 @@ class YandexCalendarAPI:
                 if not calendar_id:
                     calendar_id = 'primary'
             
-            # Получаем текущее событие
             url_get = f"{self.base_url}/calendars/{calendar_id}/events/{event_id}"
             async with aiohttp.ClientSession() as session:
                 async with session.get(url_get, headers=self.headers, timeout=15) as response:
@@ -400,7 +397,6 @@ class YandexCalendarAPI:
                         return False
                     event = await response.json()
             
-            # Обновляем поля
             if summary is not None:
                 event['summary'] = summary[:255]
             if description is not None:
@@ -542,9 +538,6 @@ class YandexCalendarAPI:
             logger.error(f"Ошибка синхронизации календаря в бот: {e}")
             return 0
 
-
-# Продолжение кода (класс YandexDiskAPI, состояния FSM, функции работы с данными, обработчики)
-# ... (весь остальной код бота остается таким же, как в предыдущей версии 4.00)
 
 class YandexDiskAPI:
     def __init__(self, token):
@@ -775,14 +768,14 @@ def load_calendar_sync():
     global calendar_sync
     if os.path.exists(CALENDAR_SYNC_FILE):
         try:
-            with open(CALENDAR_SYNC_FILE, 'r') as f:
+            with open(CALENDAR_SYNC_FILE, 'r', encoding='utf-8') as f:
                 calendar_sync = json.load(f)
         except:
             calendar_sync = {}
 
 
 def save_calendar_sync():
-    with open(CALENDAR_SYNC_FILE, 'w') as f:
+    with open(CALENDAR_SYNC_FILE, 'w', encoding='utf-8') as f:
         json.dump(calendar_sync, f, indent=2, ensure_ascii=False)
 
 
@@ -949,7 +942,7 @@ async def show_backup_notification(message: types.Message):
 def init_folders():
     Path(BACKUP_DIR).mkdir(exist_ok=True)
     if not os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'w') as f:
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump({}, f)
     if not os.path.exists(CONFIG_FILE):
         default_config = {
@@ -960,29 +953,29 @@ def init_folders():
             'timezone': 'Europe/Moscow',
             'calendar_sync_enabled': False
         }
-        with open(CONFIG_FILE, 'w') as f:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(default_config, f)
     if not os.path.exists(CALENDAR_SYNC_FILE):
-        with open(CALENDAR_SYNC_FILE, 'w') as f:
+        with open(CALENDAR_SYNC_FILE, 'w', encoding='utf-8') as f:
             json.dump({}, f)
 
 
 def load_data():
     global notifications, config, user_tokens, notifications_enabled
-    with open(DATA_FILE, 'r') as f:
+    with open(DATA_FILE, 'r', encoding='utf-8') as f:
         notifications = json.load(f)
     
     for notif_id, notif in notifications.items():
         if 'is_completed' not in notif:
             notif['is_completed'] = False
     
-    with open(CONFIG_FILE, 'r') as f:
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
         config = json.load(f)
         notifications_enabled = config.get('notifications_enabled', True)
     
     if os.path.exists(TOKEN_FILE):
         try:
-            with open(TOKEN_FILE, 'r') as f:
+            with open(TOKEN_FILE, 'r', encoding='utf-8') as f:
                 token_data = json.load(f)
                 user_tokens = {int(k): v for k, v in token_data.items()}
         except:
@@ -992,16 +985,16 @@ def load_data():
 
 
 def save_data():
-    with open(DATA_FILE, 'w') as f:
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(notifications, f, indent=2, ensure_ascii=False)
-    with open(CONFIG_FILE, 'w') as f:
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
 
 def save_user_token(user_id: int, token: str):
     global user_tokens
     user_tokens[user_id] = token
-    with open(TOKEN_FILE, 'w') as f:
+    with open(TOKEN_FILE, 'w', encoding='utf-8') as f:
         json.dump({str(k): v for k, v in user_tokens.items()}, f, indent=2)
 
 
@@ -1012,7 +1005,7 @@ def get_user_token(user_id: int) -> Optional[str]:
 def delete_user_token(user_id: int):
     if user_id in user_tokens:
         del user_tokens[user_id]
-        with open(TOKEN_FILE, 'w') as f:
+        with open(TOKEN_FILE, 'w', encoding='utf-8') as f:
             json.dump({str(k): v for k, v in user_tokens.items()}, f, indent=2)
 
 
@@ -1183,10 +1176,12 @@ async def get_yadisk_backups(user_id: int) -> List[Dict]:
 
 
 async def check_notifications():
+    """ИСПРАВЛЕННАЯ ФУНКЦИЯ ПРОВЕРКИ УВЕДОМЛЕНИЙ"""
     global notifications_enabled
     while True:
         if notifications_enabled:
             now = get_current_time()
+            tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
             
             for notif_id, notif in list(notifications.items()):
                 if notif.get('is_completed', False):
@@ -1194,46 +1189,13 @@ async def check_notifications():
                 
                 repeat_type = notif.get('repeat_type', 'no')
                 
-                if repeat_type == 'no' and notif.get('time'):
-                    notify_time = datetime.fromisoformat(notif['time'])
-                    if notify_time.tzinfo is None:
-                        tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
-                        notify_time = tz.localize(notify_time)
-                    
-                    if now >= notify_time:
-                        if notif.get('notified', False):
-                            continue
-                        
-                        is_repeat = notif.get('is_repeat', False)
-                        repeat_count = notif.get('repeat_count', 0)
-                        
-                        if is_repeat:
-                            message_text = f"🔔 **ПОВТОРНОЕ НАПОМИНАНИЕ #{repeat_count + 1}**\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}"
-                        else:
-                            message_text = f"🔔 **НАПОМИНАНИЕ**\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}"
-                        
-                        keyboard = InlineKeyboardMarkup(row_width=2)
-                        keyboard.add(
-                            InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{notif_id}"),
-                            InlineKeyboardButton("⏰ Отложить уведомление", callback_data=f"snooze_{notif_id}")
-                        )
-                        
-                        await bot.send_message(
-                            ADMIN_ID,
-                            message_text,
-                            reply_markup=keyboard,
-                            parse_mode='Markdown'
-                        )
-                        
-                        notifications[notif_id]['notified'] = True
-                        save_data()
-                
-                elif repeat_type != 'no':
+                # Обработка повторяющихся уведомлений
+                if repeat_type != 'no':
                     last_trigger = notif.get('last_trigger')
                     if last_trigger:
                         last_trigger_time = datetime.fromisoformat(last_trigger)
                         if last_trigger_time.tzinfo is None:
-                            last_trigger_time = pytz.UTC.localize(last_trigger_time)
+                            last_trigger_time = tz.localize(last_trigger_time)
                     else:
                         last_trigger_time = None
                     
@@ -1245,6 +1207,7 @@ async def check_notifications():
                         minute = notif.get('repeat_minute', 0)
                         today_trigger = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
                         
+                        # Проверяем, не срабатывало ли уже сегодня
                         if last_trigger_time is None or last_trigger_time.date() < now.date():
                             if now >= today_trigger:
                                 should_trigger = True
@@ -1262,9 +1225,11 @@ async def check_notifications():
                         next_time = get_next_weekday(weekdays_list, hour, minute, now)
                         
                         if next_time:
+                            # Проверяем, не срабатывало ли уже это уведомление
                             if last_trigger_time is None or last_trigger_time < next_time:
                                 if next_time <= now:
                                     should_trigger = True
+                                    # Ищем следующее время после текущего
                                     next_time = get_next_weekday(weekdays_list, hour, minute, now + timedelta(seconds=1))
                     
                     if should_trigger:
@@ -1273,7 +1238,6 @@ async def check_notifications():
                         
                         if is_repeat:
                             message_text = f"🔔 **ПОВТОРНОЕ НАПОМИНАНИЕ #{repeat_count + 1}**\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
-                            notifications[notif_id]['is_repeat'] = False
                         else:
                             message_text = f"🔔 **НАПОМИНАНИЕ**\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
                         
@@ -1283,21 +1247,70 @@ async def check_notifications():
                             InlineKeyboardButton("⏰ Отложить уведомление", callback_data=f"snooze_{notif_id}")
                         )
                         
-                        await bot.send_message(
-                            ADMIN_ID,
-                            message_text,
-                            reply_markup=keyboard,
-                            parse_mode='Markdown'
-                        )
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                message_text,
+                                reply_markup=keyboard,
+                                parse_mode='Markdown'
+                            )
+                            logger.info(f"Отправлено уведомление #{notif.get('num', notif_id)}: {notif['text'][:50]}...")
+                        except Exception as e:
+                            logger.error(f"Ошибка отправки уведомления: {e}")
                         
                         notifications[notif_id]['last_trigger'] = now.isoformat()
                         notifications[notif_id]['notified'] = False
+                        notifications[notif_id]['is_repeat'] = False
                         save_data()
                     
                     if next_time:
-                        tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
                         local_next = next_time.astimezone(tz) if next_time.tzinfo else next_time
                         notif['next_time'] = local_next.isoformat()
+                        save_data()
+                
+                # Обработка одноразовых уведомлений
+                elif repeat_type == 'no' and notif.get('time'):
+                    notify_time_str = notif['time']
+                    notify_time = datetime.fromisoformat(notify_time_str)
+                    
+                    # Приводим время к часовому поясу
+                    if notify_time.tzinfo is None:
+                        notify_time = tz.localize(notify_time)
+                    else:
+                        notify_time = notify_time.astimezone(tz)
+                    
+                    # Проверяем, не отправлено ли уже уведомление
+                    if notif.get('notified', False):
+                        continue
+                    
+                    # Проверяем, наступило ли время
+                    if now >= notify_time:
+                        is_repeat = notif.get('is_repeat', False)
+                        repeat_count = notif.get('repeat_count', 0)
+                        
+                        if is_repeat:
+                            message_text = f"🔔 **ПОВТОРНОЕ НАПОМИНАНИЕ #{repeat_count + 1}**\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}"
+                        else:
+                            message_text = f"🔔 **НАПОМИНАНИЕ**\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}"
+                        
+                        keyboard = InlineKeyboardMarkup(row_width=2)
+                        keyboard.add(
+                            InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{notif_id}"),
+                            InlineKeyboardButton("⏰ Отложить уведомление", callback_data=f"snooze_{notif_id}")
+                        )
+                        
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                message_text,
+                                reply_markup=keyboard,
+                                parse_mode='Markdown'
+                            )
+                            logger.info(f"Отправлено одноразовое уведомление #{notif.get('num', notif_id)}: {notif['text'][:50]}...")
+                        except Exception as e:
+                            logger.error(f"Ошибка отправки уведомления: {e}")
+                        
+                        notifications[notif_id]['notified'] = True
                         save_data()
                     
         await asyncio.sleep(30)
@@ -1703,7 +1716,7 @@ async def offer_restore_handler(callback: types.CallbackQuery, state: FSMContext
         return
     
     keyboard = InlineKeyboardMarkup(row_width=1)
-    for backup in backups:
+    for backup in backups[:10]:  # Ограничиваем до 10 бэкапов
         backup_time = backup['name'].replace('backup_', '').replace('.json', '')
         try:
             backup_date = datetime.strptime(backup_time, '%Y%m%d_%H%M%S')
@@ -2204,11 +2217,10 @@ async def save_notification(message: types.Message, state: FSMContext, notify_ti
     tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
     if notify_time.tzinfo is None:
         notify_time = tz.localize(notify_time)
-    notify_time_utc = notify_time.astimezone(pytz.UTC)
     
     notifications[notif_id] = {
         'text': data['text'],
-        'time': notify_time_utc.isoformat(),
+        'time': notify_time.isoformat(),
         'created': get_current_time().isoformat(),
         'notified': False,
         'is_completed': False,
@@ -2347,25 +2359,18 @@ async def save_edited_notification(message: types.Message, state: FSMContext, no
     tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
     if notify_time.tzinfo is None:
         notify_time = tz.localize(notify_time)
-    notify_time_utc = notify_time.astimezone(pytz.UTC)
     
-    notifications[notif_id]['time'] = notify_time_utc.isoformat()
+    notifications[notif_id]['time'] = notify_time.isoformat()
     notifications[notif_id]['notified'] = False
     notifications[notif_id]['is_completed'] = False
     notifications[notif_id]['is_repeat'] = False
     notifications[notif_id]['repeat_count'] = 0
     notifications[notif_id]['repeat_type'] = 'no'
     
-    if 'repeat_hour' in notifications[notif_id]:
-        del notifications[notif_id]['repeat_hour']
-    if 'repeat_minute' in notifications[notif_id]:
-        del notifications[notif_id]['repeat_minute']
-    if 'weekdays_list' in notifications[notif_id]:
-        del notifications[notif_id]['weekdays_list']
-    if 'last_trigger' in notifications[notif_id]:
-        del notifications[notif_id]['last_trigger']
-    if 'next_time' in notifications[notif_id]:
-        del notifications[notif_id]['next_time']
+    # Удаляем старые поля повторений
+    for key in ['repeat_hour', 'repeat_minute', 'weekdays_list', 'last_trigger', 'next_time']:
+        if key in notifications[notif_id]:
+            del notifications[notif_id][key]
     
     save_data()
     
@@ -2444,13 +2449,16 @@ async def snooze_time_selected(callback: types.CallbackQuery, state: FSMContext)
     tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
     if new_time.tzinfo is None:
         new_time = tz.localize(new_time)
-    new_time_utc = new_time.astimezone(pytz.UTC)
     
-    notifications[notif_id]['time'] = new_time_utc.isoformat()
+    notifications[notif_id]['time'] = new_time.isoformat()
     notifications[notif_id]['notified'] = False
     notifications[notif_id]['is_completed'] = False
     notifications[notif_id]['is_repeat'] = True
     notifications[notif_id]['repeat_count'] = repeat_count + 1
+    
+    # Убираем повторяющийся тип при откладывании
+    if 'repeat_type' in notifications[notif_id]:
+        del notifications[notif_id]['repeat_type']
     notifications[notif_id]['repeat_type'] = 'no'
     
     save_data()
@@ -2686,9 +2694,7 @@ async def snooze_set_every_day_time(message: types.Message, state: FSMContext):
         if first_time <= now:
             first_time += timedelta(days=1)
         
-        new_time_utc = first_time.astimezone(pytz.UTC)
-        
-        notifications[notif_id]['time'] = new_time_utc.isoformat()
+        notifications[notif_id]['time'] = first_time.isoformat()
         notifications[notif_id]['notified'] = False
         notifications[notif_id]['is_completed'] = False
         notifications[notif_id]['is_repeat'] = True
@@ -2751,9 +2757,7 @@ async def snooze_set_weekday_time(message: types.Message, state: FSMContext):
         
         repeat_count = notifications[notif_id].get('repeat_count', 0)
         
-        new_time_utc = first_time.astimezone(pytz.UTC)
-        
-        notifications[notif_id]['time'] = new_time_utc.isoformat()
+        notifications[notif_id]['time'] = first_time.isoformat()
         notifications[notif_id]['notified'] = False
         notifications[notif_id]['is_completed'] = False
         notifications[notif_id]['is_repeat'] = True
@@ -2805,9 +2809,8 @@ async def snooze_set_hours(message: types.Message, state: FSMContext):
         tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
         if new_time.tzinfo is None:
             new_time = tz.localize(new_time)
-        new_time_utc = new_time.astimezone(pytz.UTC)
         
-        notifications[notif_id]['time'] = new_time_utc.isoformat()
+        notifications[notif_id]['time'] = new_time.isoformat()
         notifications[notif_id]['notified'] = False
         notifications[notif_id]['is_completed'] = False
         notifications[notif_id]['is_repeat'] = True
@@ -2857,9 +2860,8 @@ async def snooze_set_days(message: types.Message, state: FSMContext):
         tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
         if new_time.tzinfo is None:
             new_time = tz.localize(new_time)
-        new_time_utc = new_time.astimezone(pytz.UTC)
         
-        notifications[notif_id]['time'] = new_time_utc.isoformat()
+        notifications[notif_id]['time'] = new_time.isoformat()
         notifications[notif_id]['notified'] = False
         notifications[notif_id]['is_completed'] = False
         notifications[notif_id]['is_repeat'] = True
@@ -2910,9 +2912,8 @@ async def snooze_set_months(message: types.Message, state: FSMContext):
         tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
         if new_time.tzinfo is None:
             new_time = tz.localize(new_time)
-        new_time_utc = new_time.astimezone(pytz.UTC)
         
-        notifications[notif_id]['time'] = new_time_utc.isoformat()
+        notifications[notif_id]['time'] = new_time.isoformat()
         notifications[notif_id]['notified'] = False
         notifications[notif_id]['is_completed'] = False
         notifications[notif_id]['is_repeat'] = True
@@ -2975,9 +2976,8 @@ async def snooze_set_specific_date(message: types.Message, state: FSMContext):
         tz = pytz.timezone(config.get('timezone', 'Europe/Moscow'))
         if notify_time.tzinfo is None:
             notify_time = tz.localize(notify_time)
-        new_time_utc = notify_time.astimezone(pytz.UTC)
         
-        notifications[notif_id]['time'] = new_time_utc.isoformat()
+        notifications[notif_id]['time'] = notify_time.isoformat()
         notifications[notif_id]['notified'] = False
         notifications[notif_id]['is_completed'] = False
         notifications[notif_id]['is_repeat'] = True
@@ -3025,8 +3025,9 @@ async def handle_complete(callback: types.CallbackQuery):
         
         del notifications[notif_id]
         
+        # Перенумерация
         new_notifications = {}
-        for i, (nid, notif) in enumerate(notifications.items(), 1):
+        for i, (nid, notif) in enumerate(sorted(notifications.items(), key=lambda x: int(x[0])), 1):
             notif['num'] = i
             new_notifications[str(i)] = notif
         notifications.clear()
@@ -3117,6 +3118,7 @@ async def handle_complete_today(callback: types.CallbackQuery):
 
 
 async def list_notifications_handler(message: types.Message, state: FSMContext):
+    """ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТОБРАЖЕНИЯ СПИСКА УВЕДОМЛЕНИЙ"""
     logger.info(f"Пользователь {message.from_user.id} запросил список уведомлений")
     
     if not notifications:
@@ -3136,6 +3138,8 @@ async def list_notifications_handler(message: types.Message, state: FSMContext):
         
         repeat_text = ""
         next_time_str = ""
+        status_emoji = "⏳"
+        status_text = "ОЖИДАЕТ"
         
         if repeat_type == 'every_day':
             hour = notif.get('repeat_hour', 0)
@@ -3146,6 +3150,8 @@ async def list_notifications_handler(message: types.Message, state: FSMContext):
                 if next_time.tzinfo is None:
                     next_time = tz.localize(next_time)
                 next_time_str = f"\n⏰ **Следующее:** {next_time.strftime('%d.%m.%Y в %H:%M')}"
+            status_emoji = "🔄"
+            status_text = "АКТИВНО"
         elif repeat_type == 'weekdays':
             hour = notif.get('repeat_hour', 0)
             minute = notif.get('repeat_minute', 0)
@@ -3156,22 +3162,25 @@ async def list_notifications_handler(message: types.Message, state: FSMContext):
                 if next_time.tzinfo is None:
                     next_time = tz.localize(next_time)
                 next_time_str = f"\n⏰ **Следующее:** {next_time.strftime('%d.%m.%Y в %H:%M')}"
+            status_emoji = "🔄"
+            status_text = "АКТИВНО"
         elif repeat_type == 'no' and notif.get('time'):
             notify_time = datetime.fromisoformat(notif['time'])
             if notify_time.tzinfo is None:
-                notify_time = pytz.UTC.localize(notify_time)
+                notify_time = tz.localize(notify_time)
             local_time = notify_time.astimezone(tz)
             now = get_current_time()
             
-            if now >= local_time and not notif.get('notified', False):
-                status = "⏰ СЕЙЧАС"
-                status_emoji = "🔔"
-            elif now >= local_time and notif.get('notified', True):
-                status = "⏰ ПРОСРОЧЕНО"
+            # Правильное определение статуса
+            if notif.get('notified', False):
                 status_emoji = "⚠️"
+                status_text = "ПРОСРОЧЕНО"
+            elif now >= local_time:
+                status_emoji = "⏰"
+                status_text = "СЕЙЧАС"
             else:
-                status = "⏳ ОЖИДАЕТ"
                 status_emoji = "⏳"
+                status_text = "ОЖИДАЕТ"
             
             time_left = ""
             if not notif.get('notified', False) and now < local_time:
@@ -3195,7 +3204,7 @@ async def list_notifications_handler(message: types.Message, state: FSMContext):
                 f"{status_emoji} **Уведомление #{notif.get('num', notif_id)}**{repeat_info}\n"
                 f"📝 **Текст:** {notif['text']}\n"
                 f"⏰ **Время:** {local_time.strftime('%d.%m.%Y в %H:%M')}\n"
-                f"📊 **Статус:** {status}{time_left}"
+                f"📊 **Статус:** {status_text}{time_left}"
             )
             
             keyboard = InlineKeyboardMarkup(row_width=2)
@@ -3212,9 +3221,9 @@ async def list_notifications_handler(message: types.Message, state: FSMContext):
             repeat_info = f"\n🔄 **Повторное напоминание #{repeat_count}**"
         
         text = (
-            f"🔄 **Уведомление #{notif.get('num', notif_id)}**{repeat_info}\n"
+            f"{status_emoji} **Уведомление #{notif.get('num', notif_id)}**{repeat_info}\n"
             f"📝 **Текст:** {notif['text']}\n"
-            f"📊 **Статус:** АКТИВНО{repeat_text}{next_time_str}"
+            f"📊 **Статус:** {status_text}{repeat_text}{next_time_str}"
         )
         
         keyboard = InlineKeyboardMarkup(row_width=2)
@@ -3225,7 +3234,8 @@ async def list_notifications_handler(message: types.Message, state: FSMContext):
         
         await message.reply(text, reply_markup=keyboard, parse_mode='Markdown')
     
-    active_count = sum(1 for n in notifications.values() if not n.get('notified', False) and not n.get('is_completed', False))
+    # Подсчет активных уведомлений
+    active_count = sum(1 for n in notifications.values() if not n.get('is_completed', False))
     await message.reply(
         f"📊 **Всего уведомлений:** {len(notifications)}\n"
         f"💡 **Активных:** {active_count}",
@@ -3722,7 +3732,7 @@ async def handle_delete_notification(callback: types.CallbackQuery):
         del notifications[notif_id]
         
         new_notifications = {}
-        for i, (nid, notif) in enumerate(notifications.items(), 1):
+        for i, (nid, notif) in enumerate(sorted(notifications.items(), key=lambda x: int(x[0])), 1):
             notif['num'] = i
             new_notifications[str(i)] = notif
         notifications.clear()
@@ -3904,7 +3914,7 @@ async def show_folders(chat_id: int, current_path: str, state: FSMContext):
             parent_path = "/"
         keyboard.add(InlineKeyboardButton("📁 .. (Наверх)", callback_data=f"folder_{parent_path}"))
     
-    for folder in folders:
+    for folder in folders[:10]:  # Ограничиваем до 10 папок
         folder_name = folder['name']
         folder_path = folder['path'].replace('disk:', '')
         keyboard.add(InlineKeyboardButton(f"📁 {folder_name}", callback_data=f"folder_{folder_path}"))
@@ -4103,7 +4113,7 @@ async def restore_from_yadisk(callback: types.CallbackQuery, state: FSMContext):
         return
     
     keyboard = InlineKeyboardMarkup(row_width=1)
-    for backup in backups:
+    for backup in backups[:10]:
         backup_time = backup['name'].replace('backup_', '').replace('.json', '')
         try:
             backup_date = datetime.strptime(backup_time, '%Y%m%d_%H%M%S')
@@ -4230,7 +4240,7 @@ async def on_startup(dp):
     load_data()
     
     new_notifications = {}
-    for i, (notif_id, notif) in enumerate(notifications.items(), 1):
+    for i, (notif_id, notif) in enumerate(sorted(notifications.items(), key=lambda x: int(x[0])), 1):
         notif['num'] = i
         if 'is_completed' not in notif:
             notif['is_completed'] = False
