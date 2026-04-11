@@ -47,9 +47,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "4.02"
+BOT_VERSION = "4.03"
 BOT_VERSION_DATE = "11.04.2026"
-BOT_VERSION_TIME = "15:30"
+BOT_VERSION_TIME = "16:00"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -737,6 +737,7 @@ class NotificationStates(StatesGroup):
     waiting_for_weekdays = State()
     waiting_for_weekday_time = State()
     waiting_for_every_day_time = State()
+    waiting_for_every_hour_time = State()
     waiting_for_edit_text = State()
     waiting_for_edit_time = State()
 
@@ -834,7 +835,9 @@ async def sync_notification_to_calendar(notif_id: str, action: str = 'create'):
             
             repeat_info = ""
             repeat_type = notif.get('repeat_type', 'no')
-            if repeat_type == 'every_day':
+            if repeat_type == 'every_hour':
+                repeat_info = f"Повтор: каждый час"
+            elif repeat_type == 'every_day':
                 hour = notif.get('repeat_hour', 0)
                 minute = notif.get('repeat_minute', 0)
                 repeat_info = f"Повтор: ежедневно в {hour:02d}:{minute:02d}"
@@ -1176,7 +1179,7 @@ async def get_yadisk_backups(user_id: int) -> List[Dict]:
 
 
 async def check_notifications():
-    """ИСПРАВЛЕННАЯ ФУНКЦИЯ ПРОВЕРКИ УВЕДОМЛЕНИЙ"""
+    """ИСПРАВЛЕННАЯ ФУНКЦИЯ ПРОВЕРКИ УВЕДОМЛЕНИЙ С ПОДДЕРЖКОЙ ЕЖЕЧАСНЫХ УВЕДОМЛЕНИЙ"""
     global notifications_enabled
     while True:
         if notifications_enabled:
@@ -1189,61 +1192,34 @@ async def check_notifications():
                 
                 repeat_type = notif.get('repeat_type', 'no')
                 
-                # Обработка повторяющихся уведомлений
-                if repeat_type != 'no':
+                # Обработка ежечасных уведомлений
+                if repeat_type == 'every_hour':
                     last_trigger = notif.get('last_trigger')
                     if last_trigger:
                         last_trigger_time = datetime.fromisoformat(last_trigger)
                         if last_trigger_time.tzinfo is None:
                             last_trigger_time = tz.localize(last_trigger_time)
                     else:
-                        last_trigger_time = None
+                        # Если еще не срабатывало, используем время создания
+                        created_time = datetime.fromisoformat(notif.get('created', now.isoformat()))
+                        if created_time.tzinfo is None:
+                            created_time = tz.localize(created_time)
+                        last_trigger_time = created_time
                     
-                    should_trigger = False
-                    next_time = None
-                    
-                    if repeat_type == 'every_day':
-                        hour = notif.get('repeat_hour', 0)
-                        minute = notif.get('repeat_minute', 0)
-                        today_trigger = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                        
-                        # Проверяем, не срабатывало ли уже сегодня
-                        if last_trigger_time is None or last_trigger_time.date() < now.date():
-                            if now >= today_trigger:
-                                should_trigger = True
-                                next_time = today_trigger + timedelta(days=1)
-                            else:
-                                next_time = today_trigger
-                        else:
-                            next_time = today_trigger + timedelta(days=1)
-                    
-                    elif repeat_type == 'weekdays':
-                        hour = notif.get('repeat_hour', 0)
-                        minute = notif.get('repeat_minute', 0)
-                        weekdays_list = notif.get('weekdays_list', [])
-                        
-                        next_time = get_next_weekday(weekdays_list, hour, minute, now)
-                        
-                        if next_time:
-                            # Проверяем, не срабатывало ли уже это уведомление
-                            if last_trigger_time is None or last_trigger_time < next_time:
-                                if next_time <= now:
-                                    should_trigger = True
-                                    # Ищем следующее время после текущего
-                                    next_time = get_next_weekday(weekdays_list, hour, minute, now + timedelta(seconds=1))
-                    
-                    if should_trigger:
+                    # Проверяем, прошел ли час с последнего срабатывания
+                    time_since_last = now - last_trigger_time
+                    if time_since_last.total_seconds() >= 3600:  # 1 час = 3600 секунд
                         is_repeat = notif.get('is_repeat', False)
                         repeat_count = notif.get('repeat_count', 0)
                         
                         if is_repeat:
-                            message_text = f"🔔 **ПОВТОРНОЕ НАПОМИНАНИЕ #{repeat_count + 1}**\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
+                            message_text = f"🔔 **ПОВТОРНОЕ НАПОМИНАНИЕ #{repeat_count + 1}**\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}\n\n🕐 Напоминает каждый час"
                         else:
-                            message_text = f"🔔 **НАПОМИНАНИЕ**\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
+                            message_text = f"🔔 **НАПОМИНАНИЕ**\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}\n\n🕐 Напоминает каждый час"
                         
                         keyboard = InlineKeyboardMarkup(row_width=2)
                         keyboard.add(
-                            InlineKeyboardButton("✅ Выполнено сегодня", callback_data=f"complete_today_{notif_id}"),
+                            InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{notif_id}"),
                             InlineKeyboardButton("⏰ Отложить уведомление", callback_data=f"snooze_{notif_id}")
                         )
                         
@@ -1254,19 +1230,122 @@ async def check_notifications():
                                 reply_markup=keyboard,
                                 parse_mode='Markdown'
                             )
-                            logger.info(f"Отправлено уведомление #{notif.get('num', notif_id)}: {notif['text'][:50]}...")
+                            logger.info(f"Отправлено ежечасное уведомление #{notif.get('num', notif_id)}: {notif['text'][:50]}...")
                         except Exception as e:
                             logger.error(f"Ошибка отправки уведомления: {e}")
                         
                         notifications[notif_id]['last_trigger'] = now.isoformat()
                         notifications[notif_id]['notified'] = False
-                        notifications[notif_id]['is_repeat'] = False
                         save_data()
+                
+                # Обработка ежедневных уведомлений
+                elif repeat_type == 'every_day':
+                    hour = notif.get('repeat_hour', 0)
+                    minute = notif.get('repeat_minute', 0)
+                    today_trigger = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                    
+                    last_trigger = notif.get('last_trigger')
+                    if last_trigger:
+                        last_trigger_time = datetime.fromisoformat(last_trigger)
+                        if last_trigger_time.tzinfo is None:
+                            last_trigger_time = tz.localize(last_trigger_time)
+                    else:
+                        last_trigger_time = None
+                    
+                    # Проверяем, не срабатывало ли уже сегодня
+                    if last_trigger_time is None or last_trigger_time.date() < now.date():
+                        if now >= today_trigger:
+                            is_repeat = notif.get('is_repeat', False)
+                            repeat_count = notif.get('repeat_count', 0)
+                            
+                            if is_repeat:
+                                message_text = f"🔔 **ПОВТОРНОЕ НАПОМИНАНИЕ #{repeat_count + 1}**\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
+                            else:
+                                message_text = f"🔔 **НАПОМИНАНИЕ**\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
+                            
+                            keyboard = InlineKeyboardMarkup(row_width=2)
+                            keyboard.add(
+                                InlineKeyboardButton("✅ Выполнено сегодня", callback_data=f"complete_today_{notif_id}"),
+                                InlineKeyboardButton("⏰ Отложить уведомление", callback_data=f"snooze_{notif_id}")
+                            )
+                            
+                            try:
+                                await bot.send_message(
+                                    ADMIN_ID,
+                                    message_text,
+                                    reply_markup=keyboard,
+                                    parse_mode='Markdown'
+                                )
+                                logger.info(f"Отправлено ежедневное уведомление #{notif.get('num', notif_id)}: {notif['text'][:50]}...")
+                            except Exception as e:
+                                logger.error(f"Ошибка отправки уведомления: {e}")
+                            
+                            notifications[notif_id]['last_trigger'] = now.isoformat()
+                            notifications[notif_id]['notified'] = False
+                            notifications[notif_id]['is_repeat'] = False
+                            save_data()
+                            
+                            next_time = today_trigger + timedelta(days=1)
+                            local_next = next_time.astimezone(tz) if next_time.tzinfo else next_time
+                            notif['next_time'] = local_next.isoformat()
+                            save_data()
+                
+                # Обработка уведомлений по дням недели
+                elif repeat_type == 'weekdays':
+                    hour = notif.get('repeat_hour', 0)
+                    minute = notif.get('repeat_minute', 0)
+                    weekdays_list = notif.get('weekdays_list', [])
+                    
+                    last_trigger = notif.get('last_trigger')
+                    if last_trigger:
+                        last_trigger_time = datetime.fromisoformat(last_trigger)
+                        if last_trigger_time.tzinfo is None:
+                            last_trigger_time = tz.localize(last_trigger_time)
+                    else:
+                        last_trigger_time = None
+                    
+                    next_time = get_next_weekday(weekdays_list, hour, minute, now)
                     
                     if next_time:
-                        local_next = next_time.astimezone(tz) if next_time.tzinfo else next_time
-                        notif['next_time'] = local_next.isoformat()
-                        save_data()
+                        # Проверяем, не срабатывало ли уже это уведомление
+                        if last_trigger_time is None or last_trigger_time < next_time:
+                            if next_time <= now:
+                                is_repeat = notif.get('is_repeat', False)
+                                repeat_count = notif.get('repeat_count', 0)
+                                
+                                if is_repeat:
+                                    message_text = f"🔔 **ПОВТОРНОЕ НАПОМИНАНИЕ #{repeat_count + 1}**\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
+                                else:
+                                    message_text = f"🔔 **НАПОМИНАНИЕ**\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}"
+                                
+                                keyboard = InlineKeyboardMarkup(row_width=2)
+                                keyboard.add(
+                                    InlineKeyboardButton("✅ Выполнено сегодня", callback_data=f"complete_today_{notif_id}"),
+                                    InlineKeyboardButton("⏰ Отложить уведомление", callback_data=f"snooze_{notif_id}")
+                                )
+                                
+                                try:
+                                    await bot.send_message(
+                                        ADMIN_ID,
+                                        message_text,
+                                        reply_markup=keyboard,
+                                        parse_mode='Markdown'
+                                    )
+                                    logger.info(f"Отправлено уведомление по дням недели #{notif.get('num', notif_id)}: {notif['text'][:50]}...")
+                                except Exception as e:
+                                    logger.error(f"Ошибка отправки уведомления: {e}")
+                                
+                                notifications[notif_id]['last_trigger'] = now.isoformat()
+                                notifications[notif_id]['notified'] = False
+                                notifications[notif_id]['is_repeat'] = False
+                                save_data()
+                                
+                                # Ищем следующее время после текущего
+                                next_time = get_next_weekday(weekdays_list, hour, minute, now + timedelta(seconds=1))
+                                if next_time:
+                                    local_next = next_time.astimezone(tz) if next_time.tzinfo else next_time
+                                    notif['next_time'] = local_next.isoformat()
+                                    save_data()
                 
                 # Обработка одноразовых уведомлений
                 elif repeat_type == 'no' and notif.get('time'):
@@ -1716,7 +1795,7 @@ async def offer_restore_handler(callback: types.CallbackQuery, state: FSMContext
         return
     
     keyboard = InlineKeyboardMarkup(row_width=1)
-    for backup in backups[:10]:  # Ограничиваем до 10 бэкапов
+    for backup in backups[:10]:
         backup_time = backup['name'].replace('backup_', '').replace('.json', '')
         try:
             backup_date = datetime.strptime(backup_time, '%Y%m%d_%H%M%S')
@@ -1801,6 +1880,7 @@ async def get_notification_text(message: types.Message, state: FSMContext):
         InlineKeyboardButton("📅 В днях", callback_data="time_days"),
         InlineKeyboardButton("📆 В месяцах", callback_data="time_months"),
         InlineKeyboardButton("🗓️ Конкретная дата", callback_data="time_specific"),
+        InlineKeyboardButton("🕐 Каждый час", callback_data="time_every_hour"),
         InlineKeyboardButton("📅 Каждый день", callback_data="time_every_day"),
         InlineKeyboardButton("📆 По дням недели", callback_data="time_weekdays"),
         InlineKeyboardButton("🔙 Назад к тексту", callback_data="back_to_text")
@@ -1875,6 +1955,70 @@ async def get_time_type(callback: types.CallbackQuery, state: FSMContext):
             delay=180
         )
         await NotificationStates.waiting_for_specific_date.set()
+    elif time_type == 'every_hour':
+        # Создаем ежечасное уведомление
+        data = await state.get_data()
+        edit_id = data.get('edit_id')
+        
+        if edit_id and edit_id in notifications:
+            notifications[edit_id]['repeat_type'] = 'every_hour'
+            notifications[edit_id]['notified'] = False
+            notifications[edit_id]['is_completed'] = False
+            notifications[edit_id]['is_repeat'] = False
+            notifications[edit_id]['repeat_count'] = 0
+            notifications[edit_id]['last_trigger'] = get_current_time().isoformat()
+            save_data()
+            
+            await sync_notification_to_calendar(edit_id, 'update')
+            
+            await bot.send_message(
+                callback.from_user.id,
+                f"✅ **Уведомление #{notifications[edit_id].get('num', edit_id)} изменено!**\n"
+                f"📝 {notifications[edit_id]['text']}\n"
+                f"📅 **Тип:** Каждый час\n"
+                f"🕐 Будет напоминать каждый час\n",
+                parse_mode='Markdown'
+            )
+            await show_backup_notification(callback.message)
+            await state.finish()
+        else:
+            next_num = len(notifications) + 1
+            notif_id = str(next_num)
+            
+            now = get_current_time()
+            
+            notifications[notif_id] = {
+                'text': data['text'],
+                'time': now.isoformat(),
+                'created': now.isoformat(),
+                'notified': False,
+                'is_completed': False,
+                'num': next_num,
+                'repeat_type': 'every_hour',
+                'last_trigger': now.isoformat(),
+                'is_repeat': False,
+                'repeat_count': 0
+            }
+            
+            save_data()
+            logger.info(f"Создано ежечасное уведомление #{next_num}")
+            
+            await sync_notification_to_calendar(notif_id, 'create')
+            
+            await bot.send_message(
+                callback.from_user.id,
+                f"✅ **Уведомление #{next_num} создано!**\n"
+                f"📝 {data['text']}\n"
+                f"📅 **Тип:** Каждый час\n"
+                f"🕐 Будет напоминать каждый час\n\n"
+                f"ℹ️ Когда уведомление сработает, вы сможете:\n"
+                f"• Нажать «✅ Выполнено» - уведомление удалится\n"
+                f"• Нажать «⏰ Отложить уведомление» - выбрать новое время для напоминания",
+                parse_mode='Markdown'
+            )
+            
+            await show_backup_notification(callback.message)
+            await state.finish()
     elif time_type == 'every_day':
         await send_with_auto_delete(
             callback.from_user.id,
@@ -1916,6 +2060,7 @@ async def back_to_time_type_from_weekdays(callback: types.CallbackQuery, state: 
         InlineKeyboardButton("📅 В днях", callback_data="time_days"),
         InlineKeyboardButton("📆 В месяцах", callback_data="time_months"),
         InlineKeyboardButton("🗓️ Конкретная дата", callback_data="time_specific"),
+        InlineKeyboardButton("🕐 Каждый час", callback_data="time_every_hour"),
         InlineKeyboardButton("📅 Каждый день", callback_data="time_every_day"),
         InlineKeyboardButton("📆 По дням недели", callback_data="time_weekdays"),
         InlineKeyboardButton("🔙 Назад к тексту", callback_data="back_to_text")
@@ -2367,7 +2512,6 @@ async def save_edited_notification(message: types.Message, state: FSMContext, no
     notifications[notif_id]['repeat_count'] = 0
     notifications[notif_id]['repeat_type'] = 'no'
     
-    # Удаляем старые поля повторений
     for key in ['repeat_hour', 'repeat_minute', 'weekdays_list', 'last_trigger', 'next_time']:
         if key in notifications[notif_id]:
             del notifications[notif_id][key]
@@ -2455,10 +2599,6 @@ async def snooze_time_selected(callback: types.CallbackQuery, state: FSMContext)
     notifications[notif_id]['is_completed'] = False
     notifications[notif_id]['is_repeat'] = True
     notifications[notif_id]['repeat_count'] = repeat_count + 1
-    
-    # Убираем повторяющийся тип при откладывании
-    if 'repeat_type' in notifications[notif_id]:
-        del notifications[notif_id]['repeat_type']
     notifications[notif_id]['repeat_type'] = 'no'
     
     save_data()
@@ -2705,7 +2845,7 @@ async def snooze_set_every_day_time(message: types.Message, state: FSMContext):
         
         await sync_notification_to_calendar(notif_id, 'update')
         
-        logger.info(f"Уведомление {notif_id} отложено по дням недели")
+        logger.info(f"Уведомление {notif_id} отложено на ежедневное время")
         
         await message.reply(
             f"✅ **Уведомление отложено!**\n\n"
@@ -3025,7 +3165,6 @@ async def handle_complete(callback: types.CallbackQuery):
         
         del notifications[notif_id]
         
-        # Перенумерация
         new_notifications = {}
         for i, (nid, notif) in enumerate(sorted(notifications.items(), key=lambda x: int(x[0])), 1):
             notif['num'] = i
@@ -3118,7 +3257,7 @@ async def handle_complete_today(callback: types.CallbackQuery):
 
 
 async def list_notifications_handler(message: types.Message, state: FSMContext):
-    """ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТОБРАЖЕНИЯ СПИСКА УВЕДОМЛЕНИЙ"""
+    """ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТОБРАЖЕНИЯ СПИСКА УВЕДОМЛЕНИЙ С ПОДДЕРЖКОЙ ЕЖЕЧАСНЫХ"""
     logger.info(f"Пользователь {message.from_user.id} запросил список уведомлений")
     
     if not notifications:
@@ -3141,7 +3280,17 @@ async def list_notifications_handler(message: types.Message, state: FSMContext):
         status_emoji = "⏳"
         status_text = "ОЖИДАЕТ"
         
-        if repeat_type == 'every_day':
+        if repeat_type == 'every_hour':
+            repeat_text = f"\n🔄 **Повтор:** Каждый час"
+            last_trigger = notif.get('last_trigger')
+            if last_trigger:
+                last_time = datetime.fromisoformat(last_trigger)
+                if last_time.tzinfo is None:
+                    last_time = tz.localize(last_time)
+                next_time_str = f"\n⏰ **Последнее:** {last_time.strftime('%d.%m.%Y в %H:%M')}"
+            status_emoji = "🔄"
+            status_text = "АКТИВНО"
+        elif repeat_type == 'every_day':
             hour = notif.get('repeat_hour', 0)
             minute = notif.get('repeat_minute', 0)
             repeat_text = f"\n🔄 **Повтор:** Каждый день в {hour:02d}:{minute:02d}"
@@ -3171,7 +3320,6 @@ async def list_notifications_handler(message: types.Message, state: FSMContext):
             local_time = notify_time.astimezone(tz)
             now = get_current_time()
             
-            # Правильное определение статуса
             if notif.get('notified', False):
                 status_emoji = "⚠️"
                 status_text = "ПРОСРОЧЕНО"
@@ -3234,7 +3382,6 @@ async def list_notifications_handler(message: types.Message, state: FSMContext):
         
         await message.reply(text, reply_markup=keyboard, parse_mode='Markdown')
     
-    # Подсчет активных уведомлений
     active_count = sum(1 for n in notifications.values() if not n.get('is_completed', False))
     await message.reply(
         f"📊 **Всего уведомлений:** {len(notifications)}\n"
@@ -3445,7 +3592,7 @@ async def toggle_calendar_sync(callback: types.CallbackQuery, state: FSMContext)
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data in ['edit_time_hours', 'edit_time_days', 'edit_time_months', 'edit_time_specific', 'edit_time_every_day', 'edit_time_weekdays'], state=NotificationStates.waiting_for_edit_time)
+@dp.callback_query_handler(lambda c: c.data in ['edit_time_hours', 'edit_time_days', 'edit_time_months', 'edit_time_specific', 'edit_time_every_hour', 'edit_time_every_day', 'edit_time_weekdays'], state=NotificationStates.waiting_for_edit_time)
 async def process_edit_time_type(callback: types.CallbackQuery, state: FSMContext):
     time_type = callback.data.replace("edit_time_", "")
     logger.info(f"Выбран тип времени для редактирования: {time_type}")
@@ -3505,6 +3652,27 @@ async def process_edit_time_type(callback: types.CallbackQuery, state: FSMContex
             delay=180
         )
         await NotificationStates.waiting_for_specific_date.set()
+    elif time_type == 'every_hour':
+        notifications[edit_id]['repeat_type'] = 'every_hour'
+        notifications[edit_id]['notified'] = False
+        notifications[edit_id]['is_completed'] = False
+        notifications[edit_id]['is_repeat'] = False
+        notifications[edit_id]['repeat_count'] = 0
+        notifications[edit_id]['last_trigger'] = get_current_time().isoformat()
+        save_data()
+        
+        await sync_notification_to_calendar(edit_id, 'update')
+        
+        await bot.send_message(
+            callback.from_user.id,
+            f"✅ **Уведомление #{notifications[edit_id].get('num', edit_id)} изменено!**\n"
+            f"📝 {notifications[edit_id]['text']}\n"
+            f"📅 **Тип:** Каждый час\n"
+            f"🕐 Будет напоминать каждый час\n",
+            parse_mode='Markdown'
+        )
+        await show_backup_notification(callback.message)
+        await state.finish()
     elif time_type == 'every_day':
         await send_with_auto_delete(
             callback.from_user.id,
@@ -3580,6 +3748,7 @@ async def edit_notification_time_handler(callback: types.CallbackQuery, state: F
         InlineKeyboardButton("📅 В днях", callback_data="edit_time_days"),
         InlineKeyboardButton("📆 В месяцах", callback_data="edit_time_months"),
         InlineKeyboardButton("🗓️ Конкретная дата", callback_data="edit_time_specific"),
+        InlineKeyboardButton("🕐 Каждый час", callback_data="edit_time_every_hour"),
         InlineKeyboardButton("📅 Каждый день", callback_data="edit_time_every_day"),
         InlineKeyboardButton("📆 По дням недели", callback_data="edit_time_weekdays"),
         InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit")
@@ -3914,7 +4083,7 @@ async def show_folders(chat_id: int, current_path: str, state: FSMContext):
             parent_path = "/"
         keyboard.add(InlineKeyboardButton("📁 .. (Наверх)", callback_data=f"folder_{parent_path}"))
     
-    for folder in folders[:10]:  # Ограничиваем до 10 папок
+    for folder in folders[:10]:
         folder_name = folder['name']
         folder_path = folder['path'].replace('disk:', '')
         keyboard.add(InlineKeyboardButton(f"📁 {folder_name}", callback_data=f"folder_{folder_path}"))
