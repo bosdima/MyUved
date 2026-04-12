@@ -47,9 +47,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "4.03"
-BOT_VERSION_DATE = "11.04.2026"
-BOT_VERSION_TIME = "16:00"
+BOT_VERSION = "4.04"
+BOT_VERSION_DATE = "12.04.2026"
+BOT_VERSION_TIME = "10:00"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -1179,7 +1179,7 @@ async def get_yadisk_backups(user_id: int) -> List[Dict]:
 
 
 async def check_notifications():
-    """ИСПРАВЛЕННАЯ ФУНКЦИЯ ПРОВЕРКИ УВЕДОМЛЕНИЙ С ПОДДЕРЖКОЙ ЕЖЕЧАСНЫХ УВЕДОМЛЕНИЙ"""
+    """ИСПРАВЛЕННАЯ ФУНКЦИЯ ПРОВЕРКИ УВЕДОМЛЕНИЙ С КОРРЕКТНОЙ ОБРАБОТКОЙ ЕЖЕЧАСНЫХ И ПРОСРОЧЕННЫХ"""
     global notifications_enabled
     while True:
         if notifications_enabled:
@@ -1200,15 +1200,17 @@ async def check_notifications():
                         if last_trigger_time.tzinfo is None:
                             last_trigger_time = tz.localize(last_trigger_time)
                     else:
-                        # Если еще не срабатывало, используем время создания
-                        created_time = datetime.fromisoformat(notif.get('created', now.isoformat()))
-                        if created_time.tzinfo is None:
-                            created_time = tz.localize(created_time)
-                        last_trigger_time = created_time
+                        created_str = notif.get('created')
+                        if created_str:
+                            created_time = datetime.fromisoformat(created_str)
+                            if created_time.tzinfo is None:
+                                created_time = tz.localize(created_time)
+                            last_trigger_time = created_time
+                        else:
+                            last_trigger_time = now - timedelta(hours=1)
                     
-                    # Проверяем, прошел ли час с последнего срабатывания
                     time_since_last = now - last_trigger_time
-                    if time_since_last.total_seconds() >= 3600:  # 1 час = 3600 секунд
+                    if time_since_last.total_seconds() >= 3600:
                         is_repeat = notif.get('is_repeat', False)
                         repeat_count = notif.get('repeat_count', 0)
                         
@@ -1252,7 +1254,6 @@ async def check_notifications():
                     else:
                         last_trigger_time = None
                     
-                    # Проверяем, не срабатывало ли уже сегодня
                     if last_trigger_time is None or last_trigger_time.date() < now.date():
                         if now >= today_trigger:
                             is_repeat = notif.get('is_repeat', False)
@@ -1307,7 +1308,6 @@ async def check_notifications():
                     next_time = get_next_weekday(weekdays_list, hour, minute, now)
                     
                     if next_time:
-                        # Проверяем, не срабатывало ли уже это уведомление
                         if last_trigger_time is None or last_trigger_time < next_time:
                             if next_time <= now:
                                 is_repeat = notif.get('is_repeat', False)
@@ -1340,7 +1340,6 @@ async def check_notifications():
                                 notifications[notif_id]['is_repeat'] = False
                                 save_data()
                                 
-                                # Ищем следующее время после текущего
                                 next_time = get_next_weekday(weekdays_list, hour, minute, now + timedelta(seconds=1))
                                 if next_time:
                                     local_next = next_time.astimezone(tz) if next_time.tzinfo else next_time
@@ -1352,45 +1351,75 @@ async def check_notifications():
                     notify_time_str = notif['time']
                     notify_time = datetime.fromisoformat(notify_time_str)
                     
-                    # Приводим время к часовому поясу
                     if notify_time.tzinfo is None:
                         notify_time = tz.localize(notify_time)
                     else:
                         notify_time = notify_time.astimezone(tz)
                     
-                    # Проверяем, не отправлено ли уже уведомление
-                    if notif.get('notified', False):
-                        continue
-                    
-                    # Проверяем, наступило ли время
-                    if now >= notify_time:
-                        is_repeat = notif.get('is_repeat', False)
-                        repeat_count = notif.get('repeat_count', 0)
-                        
-                        if is_repeat:
-                            message_text = f"🔔 **ПОВТОРНОЕ НАПОМИНАНИЕ #{repeat_count + 1}**\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}"
-                        else:
-                            message_text = f"🔔 **НАПОМИНАНИЕ**\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}"
-                        
-                        keyboard = InlineKeyboardMarkup(row_width=2)
-                        keyboard.add(
-                            InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{notif_id}"),
-                            InlineKeyboardButton("⏰ Отложить уведомление", callback_data=f"snooze_{notif_id}")
-                        )
-                        
-                        try:
-                            await bot.send_message(
-                                ADMIN_ID,
-                                message_text,
-                                reply_markup=keyboard,
-                                parse_mode='Markdown'
+                    if not notif.get('notified', False):
+                        if now >= notify_time:
+                            is_repeat = notif.get('is_repeat', False)
+                            repeat_count = notif.get('repeat_count', 0)
+                            
+                            if is_repeat:
+                                message_text = f"🔔 **ПОВТОРНОЕ НАПОМИНАНИЕ #{repeat_count + 1}**\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}"
+                            else:
+                                message_text = f"🔔 **НАПОМИНАНИЕ**\n\n📝 {notif['text']}\n\n⏰ {notify_time.strftime('%d.%m.%Y %H:%M:%S')}"
+                            
+                            keyboard = InlineKeyboardMarkup(row_width=2)
+                            keyboard.add(
+                                InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{notif_id}"),
+                                InlineKeyboardButton("⏰ Отложить уведомление", callback_data=f"snooze_{notif_id}")
                             )
-                            logger.info(f"Отправлено одноразовое уведомление #{notif.get('num', notif_id)}: {notif['text'][:50]}...")
-                        except Exception as e:
-                            logger.error(f"Ошибка отправки уведомления: {e}")
+                            
+                            try:
+                                await bot.send_message(
+                                    ADMIN_ID,
+                                    message_text,
+                                    reply_markup=keyboard,
+                                    parse_mode='Markdown'
+                                )
+                                logger.info(f"Отправлено одноразовое уведомление #{notif.get('num', notif_id)}: {notif['text'][:50]}...")
+                            except Exception as e:
+                                logger.error(f"Ошибка отправки уведомления: {e}")
+                            
+                            notifications[notif_id]['notified'] = True
+                            notifications[notif_id]['last_repeat_time'] = now.isoformat()
+                            save_data()
+                    else:
+                        last_repeat = notif.get('last_repeat_time')
+                        if last_repeat:
+                            last_repeat_time = datetime.fromisoformat(last_repeat)
+                            if last_repeat_time.tzinfo is None:
+                                last_repeat_time = tz.localize(last_repeat_time)
+                        else:
+                            last_repeat_time = notify_time
                         
-                        notifications[notif_id]['notified'] = True
-                        save_data()
+                        time_since_last = now - last_repeat_time
+                        if time_since_last.total_seconds() >= 3600:
+                            repeat_count = notif.get('repeat_count', 0) + 1
+                            message_text = f"🔔 **ПРОПУЩЕННОЕ НАПОМИНАНИЕ #{repeat_count}**\n\n📝 {notif['text']}\n\n⏰ Пропущено с {notify_time.strftime('%d.%m.%Y %H:%M')}\n🕐 Прошло более часа"
+                            
+                            keyboard = InlineKeyboardMarkup(row_width=2)
+                            keyboard.add(
+                                InlineKeyboardButton("✅ Выполнено", callback_data=f"complete_{notif_id}"),
+                                InlineKeyboardButton("⏰ Отложить уведомление", callback_data=f"snooze_{notif_id}")
+                            )
+                            
+                            try:
+                                await bot.send_message(
+                                    ADMIN_ID,
+                                    message_text,
+                                    reply_markup=keyboard,
+                                    parse_mode='Markdown'
+                                )
+                                logger.info(f"Отправлено повторное уведомление для просроченного #{notif.get('num', notif_id)}")
+                            except Exception as e:
+                                logger.error(f"Ошибка отправки уведомления: {e}")
+                            
+                            notifications[notif_id]['last_repeat_time'] = now.isoformat()
+                            notifications[notif_id]['repeat_count'] = repeat_count
+                            save_data()
                     
         await asyncio.sleep(30)
 
@@ -1956,7 +1985,6 @@ async def get_time_type(callback: types.CallbackQuery, state: FSMContext):
         )
         await NotificationStates.waiting_for_specific_date.set()
     elif time_type == 'every_hour':
-        # Создаем ежечасное уведомление
         data = await state.get_data()
         edit_id = data.get('edit_id')
         
