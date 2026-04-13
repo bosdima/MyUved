@@ -47,9 +47,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия бота
-BOT_VERSION = "4.04"
-BOT_VERSION_DATE = "12.04.2026"
-BOT_VERSION_TIME = "10:00"
+BOT_VERSION = "4.05"
+BOT_VERSION_DATE = "13.04.2026"
+BOT_VERSION_TIME = "08:30"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -971,6 +971,12 @@ def load_data():
     for notif_id, notif in notifications.items():
         if 'is_completed' not in notif:
             notif['is_completed'] = False
+        if 'last_repeat_time' not in notif:
+            notif['last_repeat_time'] = None
+        if 'repeat_count' not in notif:
+            notif['repeat_count'] = 0
+        if 'is_repeat' not in notif:
+            notif['is_repeat'] = False
     
     with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
         config = json.load(f)
@@ -1148,6 +1154,12 @@ async def restore_from_yadisk_backup(backup_name: str, user_id: int) -> bool:
                 for notif_id, notif in notifications.items():
                     if 'is_completed' not in notif:
                         notif['is_completed'] = False
+                    if 'last_repeat_time' not in notif:
+                        notif['last_repeat_time'] = None
+                    if 'repeat_count' not in notif:
+                        notif['repeat_count'] = 0
+                    if 'is_repeat' not in notif:
+                        notif['is_repeat'] = False
                 if 'config' in backup_data:
                     config = backup_data['config']
                 if 'calendar_sync' in backup_data:
@@ -1179,7 +1191,7 @@ async def get_yadisk_backups(user_id: int) -> List[Dict]:
 
 
 async def check_notifications():
-    """ИСПРАВЛЕННАЯ ФУНКЦИЯ ПРОВЕРКИ УВЕДОМЛЕНИЙ С КОРРЕКТНОЙ ОБРАБОТКОЙ ЕЖЕЧАСНЫХ И ПРОСРОЧЕННЫХ"""
+    """ИСПРАВЛЕННАЯ ФУНКЦИЯ ПРОВЕРКИ УВЕДОМЛЕНИЙ - повторные уведомления работают корректно"""
     global notifications_enabled
     while True:
         if notifications_enabled:
@@ -1346,7 +1358,7 @@ async def check_notifications():
                                     notif['next_time'] = local_next.isoformat()
                                     save_data()
                 
-                # Обработка одноразовых уведомлений
+                # Обработка одноразовых уведомлений (ИСПРАВЛЕНО)
                 elif repeat_type == 'no' and notif.get('time'):
                     notify_time_str = notif['time']
                     notify_time = datetime.fromisoformat(notify_time_str)
@@ -1356,7 +1368,9 @@ async def check_notifications():
                     else:
                         notify_time = notify_time.astimezone(tz)
                     
+                    # Проверяем, было ли уже отправлено уведомление
                     if not notif.get('notified', False):
+                        # Первое уведомление - отправляем в назначенное время
                         if now >= notify_time:
                             is_repeat = notif.get('is_repeat', False)
                             repeat_count = notif.get('repeat_count', 0)
@@ -1383,22 +1397,28 @@ async def check_notifications():
                             except Exception as e:
                                 logger.error(f"Ошибка отправки уведомления: {e}")
                             
+                            # Помечаем как отправленное и запоминаем время отправки
                             notifications[notif_id]['notified'] = True
                             notifications[notif_id]['last_repeat_time'] = now.isoformat()
                             save_data()
+                    
                     else:
-                        last_repeat = notif.get('last_repeat_time')
-                        if last_repeat:
-                            last_repeat_time = datetime.fromisoformat(last_repeat)
+                        # Уведомление уже было отправлено - проверяем, нужно ли повторное
+                        # Получаем время последнего повторного уведомления
+                        last_repeat_str = notif.get('last_repeat_time')
+                        if last_repeat_str:
+                            last_repeat_time = datetime.fromisoformat(last_repeat_str)
                             if last_repeat_time.tzinfo is None:
                                 last_repeat_time = tz.localize(last_repeat_time)
                         else:
+                            # Если нет записи о повторных, используем время оригинального уведомления
                             last_repeat_time = notify_time
                         
+                        # Проверяем, прошел ли час с последнего уведомления
                         time_since_last = now - last_repeat_time
                         if time_since_last.total_seconds() >= 3600:
                             repeat_count = notif.get('repeat_count', 0) + 1
-                            message_text = f"🔔 **ПРОПУЩЕННОЕ НАПОМИНАНИЕ #{repeat_count}**\n\n📝 {notif['text']}\n\n⏰ Пропущено с {notify_time.strftime('%d.%m.%Y %H:%M')}\n🕐 Прошло более часа"
+                            message_text = f"🔔 **ПОВТОРНОЕ НАПОМИНАНИЕ #{repeat_count}**\n\n📝 {notif['text']}\n\n⏰ {now.strftime('%d.%m.%Y %H:%M:%S')}\n\n❗ Вы не отметили напоминание как выполненное"
                             
                             keyboard = InlineKeyboardMarkup(row_width=2)
                             keyboard.add(
@@ -1413,12 +1433,14 @@ async def check_notifications():
                                     reply_markup=keyboard,
                                     parse_mode='Markdown'
                                 )
-                                logger.info(f"Отправлено повторное уведомление для просроченного #{notif.get('num', notif_id)}")
+                                logger.info(f"Отправлено повторное уведомление для #{notif.get('num', notif_id)} (повтор #{repeat_count})")
                             except Exception as e:
-                                logger.error(f"Ошибка отправки уведомления: {e}")
+                                logger.error(f"Ошибка отправки повторного уведомления: {e}")
                             
+                            # Обновляем время последнего повторного уведомления и счетчик
                             notifications[notif_id]['last_repeat_time'] = now.isoformat()
                             notifications[notif_id]['repeat_count'] = repeat_count
+                            notifications[notif_id]['is_repeat'] = True
                             save_data()
                     
         await asyncio.sleep(30)
@@ -2400,7 +2422,8 @@ async def save_notification(message: types.Message, state: FSMContext, notify_ti
         'num': next_num,
         'repeat_type': 'no',
         'is_repeat': False,
-        'repeat_count': 0
+        'repeat_count': 0,
+        'last_repeat_time': None
     }
     
     save_data()
@@ -2539,6 +2562,7 @@ async def save_edited_notification(message: types.Message, state: FSMContext, no
     notifications[notif_id]['is_repeat'] = False
     notifications[notif_id]['repeat_count'] = 0
     notifications[notif_id]['repeat_type'] = 'no'
+    notifications[notif_id]['last_repeat_time'] = None
     
     for key in ['repeat_hour', 'repeat_minute', 'weekdays_list', 'last_trigger', 'next_time']:
         if key in notifications[notif_id]:
@@ -2628,6 +2652,7 @@ async def snooze_time_selected(callback: types.CallbackQuery, state: FSMContext)
     notifications[notif_id]['is_repeat'] = True
     notifications[notif_id]['repeat_count'] = repeat_count + 1
     notifications[notif_id]['repeat_type'] = 'no'
+    notifications[notif_id]['last_repeat_time'] = None
     
     save_data()
     
@@ -2868,6 +2893,7 @@ async def snooze_set_every_day_time(message: types.Message, state: FSMContext):
         notifications[notif_id]['is_repeat'] = True
         notifications[notif_id]['repeat_count'] = repeat_count + 1
         notifications[notif_id]['repeat_type'] = 'no'
+        notifications[notif_id]['last_repeat_time'] = None
         
         save_data()
         
@@ -2931,6 +2957,7 @@ async def snooze_set_weekday_time(message: types.Message, state: FSMContext):
         notifications[notif_id]['is_repeat'] = True
         notifications[notif_id]['repeat_count'] = repeat_count + 1
         notifications[notif_id]['repeat_type'] = 'no'
+        notifications[notif_id]['last_repeat_time'] = None
         
         save_data()
         
@@ -2984,6 +3011,7 @@ async def snooze_set_hours(message: types.Message, state: FSMContext):
         notifications[notif_id]['is_repeat'] = True
         notifications[notif_id]['repeat_count'] = repeat_count + 1
         notifications[notif_id]['repeat_type'] = 'no'
+        notifications[notif_id]['last_repeat_time'] = None
         
         save_data()
         
@@ -3035,6 +3063,7 @@ async def snooze_set_days(message: types.Message, state: FSMContext):
         notifications[notif_id]['is_repeat'] = True
         notifications[notif_id]['repeat_count'] = repeat_count + 1
         notifications[notif_id]['repeat_type'] = 'no'
+        notifications[notif_id]['last_repeat_time'] = None
         
         save_data()
         
@@ -3087,6 +3116,7 @@ async def snooze_set_months(message: types.Message, state: FSMContext):
         notifications[notif_id]['is_repeat'] = True
         notifications[notif_id]['repeat_count'] = repeat_count + 1
         notifications[notif_id]['repeat_type'] = 'no'
+        notifications[notif_id]['last_repeat_time'] = None
         
         save_data()
         
@@ -3151,6 +3181,7 @@ async def snooze_set_specific_date(message: types.Message, state: FSMContext):
         notifications[notif_id]['is_repeat'] = True
         notifications[notif_id]['repeat_count'] = repeat_count + 1
         notifications[notif_id]['repeat_type'] = 'no'
+        notifications[notif_id]['last_repeat_time'] = None
         
         save_data()
         
@@ -3235,6 +3266,7 @@ async def handle_complete_today(callback: types.CallbackQuery):
         notif['is_completed'] = False
         notif['is_repeat'] = False
         notif['repeat_count'] = 0
+        notif['last_repeat_time'] = None
         save_data()
         
         await sync_notification_to_calendar(notif_id, 'update')
@@ -3285,7 +3317,7 @@ async def handle_complete_today(callback: types.CallbackQuery):
 
 
 async def list_notifications_handler(message: types.Message, state: FSMContext):
-    """ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТОБРАЖЕНИЯ СПИСКА УВЕДОМЛЕНИЙ С ПОДДЕРЖКОЙ ЕЖЕЧАСНЫХ"""
+    """Функция отображения списка уведомлений"""
     logger.info(f"Пользователь {message.from_user.id} запросил список уведомлений")
     
     if not notifications:
@@ -3349,8 +3381,22 @@ async def list_notifications_handler(message: types.Message, state: FSMContext):
             now = get_current_time()
             
             if notif.get('notified', False):
-                status_emoji = "⚠️"
-                status_text = "ПРОСРОЧЕНО"
+                # Уведомление уже отправлено - проверяем, не просрочено ли
+                last_repeat_str = notif.get('last_repeat_time')
+                if last_repeat_str:
+                    last_repeat = datetime.fromisoformat(last_repeat_str)
+                    if last_repeat.tzinfo is None:
+                        last_repeat = tz.localize(last_repeat)
+                    time_since_last = now - last_repeat
+                    if time_since_last.total_seconds() >= 3600:
+                        status_emoji = "⚠️"
+                        status_text = "ПРОСРОЧЕНО"
+                    else:
+                        status_emoji = "🔄"
+                        status_text = "ОЖИДАЕТ ПОВТОРА"
+                else:
+                    status_emoji = "⚠️"
+                    status_text = "ПРОСРОЧЕНО"
             elif now >= local_time:
                 status_emoji = "⏰"
                 status_text = "СЕЙЧАС"
@@ -4378,6 +4424,12 @@ async def receive_backup_file(message: types.Message, state: FSMContext):
             for notif_id, notif in notifications.items():
                 if 'is_completed' not in notif:
                     notif['is_completed'] = False
+                if 'last_repeat_time' not in notif:
+                    notif['last_repeat_time'] = None
+                if 'repeat_count' not in notif:
+                    notif['repeat_count'] = 0
+                if 'is_repeat' not in notif:
+                    notif['is_repeat'] = False
             if 'config' in backup_data:
                 config = backup_data['config']
             if 'calendar_sync' in backup_data:
@@ -4441,6 +4493,12 @@ async def on_startup(dp):
         notif['num'] = i
         if 'is_completed' not in notif:
             notif['is_completed'] = False
+        if 'last_repeat_time' not in notif:
+            notif['last_repeat_time'] = None
+        if 'repeat_count' not in notif:
+            notif['repeat_count'] = 0
+        if 'is_repeat' not in notif:
+            notif['is_repeat'] = False
         new_notifications[str(i)] = notif
     notifications.clear()
     notifications.update(new_notifications)
